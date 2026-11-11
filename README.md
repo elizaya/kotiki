@@ -10,6 +10,10 @@ Two cats are built in: Tom (grey, sturdy, permanently judging you) and Pirozhok 
 
 You need a Mac with macOS 12 or later.
 
+**Ready-made app.** Download `Kotiki.zip` from the [latest release](https://github.com/elizaya/kotiki/releases/latest), unzip it, move `Kotiki.app` to Applications and open it.
+
+**Build it yourself.**
+
 ```bash
 xcode-select --install
 git clone https://github.com/elizaya/kotiki.git
