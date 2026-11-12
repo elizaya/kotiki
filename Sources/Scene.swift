@@ -23,6 +23,7 @@ enum Prefs {
     static var playKey: Int { get { int("playKey2", 0) } set { d.set(newValue, forKey: "playKey2") } }
     static var tomBreaks: Bool { get { bool("tomBreaks", true) } set { d.set(newValue, forKey: "tomBreaks") } }
     static var judge: Bool { get { bool("judge", true) } set { d.set(newValue, forKey: "judge") } }
+    static var autoUpdate: Bool { get { bool("autoUpdate", true) } set { d.set(newValue, forKey: "autoUpdate") } }
 }
 
 // MARK: поверхности и сугробы
@@ -147,7 +148,7 @@ struct Flake {
 
 // MARK: кот
 
-enum CatState { case stand, walk, sit, sitBack, sleep, seal, lounge, loaf, crouch, jump, fall, shake, stretch, drag }
+enum CatState { case stand, walk, sit, sitBack, sleep, seal, lounge, loaf, crouch, jump, fall, shake, stretch, drag, scratch, scratchWall }
 enum SubAct { case none, swat, sneeze }
 
 final class Cat {
@@ -190,6 +191,10 @@ final class Cat {
     var goal = Goal.none
     var catching = false
     var hoverT = 0.0
+    /// только что разошёлся с другим котом — пока не трогаем
+    var avoidT = 0.0
+    /// чем кот был занят, когда из-под него ушла опора (Док выехал или спрятался)
+    var resume: (CatState, Double)?
 
     init(_ look: CatLook) {
         self.look = look
@@ -220,7 +225,20 @@ final class OverlayScene: SKScene {
     var mouse = CGPoint.zero
     var idle = 0.0
     let pid = Int(ProcessInfo.processInfo.processIdentifier)
-    var dockCache: (CGFloat, Double) = (0, -100)
+    var dockCache: (DockInfo, Double) = (DockInfo(), -100)
+    /// автоскрываемый Док сейчас выехал
+    var dockUp = false
+    var dockInT = 0.0
+    var dockOutT = 0.0
+    var forceDock = false
+    /// прогон без экрана для проверки: коты не засыпают от бездействия
+    var sim = false
+    /// сколько секунд коты простояли друг на друге (для проверки)
+    var overlapT = 0.0
+    var scratches = 0
+    /// края «земли»: экран минус Док, если он сбоку
+    var groundL: CGFloat = 0
+    var groundR: CGFloat = 0
     var judge: SKSpriteNode?
     var judgeT = 0.0
     var judgeLook = CatLook.tom
@@ -275,7 +293,8 @@ final class OverlayScene: SKScene {
             c.x = CGFloat.random(in: W * 0.2...W * 0.8); c.y = H + 40; c.state = .fall
             addChild(c.node); cats.append(c)
         }
-        for c in cats { c.texT = 0 }
+        // у каждого кота свой слой: на одном слое спрайты мигают, когда перекрываются
+        for c in cats { c.texT = 0; c.node.zPosition = c.look.name == CatLook.pirozhok.name ? 10.5 : 10 }
         // снег
         let n = [0, 70, 150, 330][max(0, min(3, Prefs.snow))]
         while flakes.count > n { flakes.removeLast().node.removeFromParent() }
@@ -318,7 +337,9 @@ final class OverlayScene: SKScene {
         last = now; clock += dt
         mouse = NSEvent.mouseLocation
         idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+        if sim { idle = 0 }
         surfT -= dt; suitcaseCD -= dt
+        trackDock(dt)
         if surfT <= 0 || NSEvent.pressedMouseButtons != 0 { refreshSurfaces(); surfT = 0.15 }
         stepSnow(CGFloat(dt))
         trackMouse()
@@ -327,8 +348,10 @@ final class OverlayScene: SKScene {
                 c.hoverT += dt
                 if c.hoverT > 0.25, c.state == .walk, c.chase == nil { begin(c, .sit, 2.5) }
             } else { c.hoverT = 0 }
-            step(c, dt); paint(c, dt)
+            step(c, dt)
         }
+        separate()
+        for c in cats { paint(c, dt) }
         if let c = grabCat {
             if NSEvent.pressedMouseButtons & 1 == 0 {
                 if dragging { begin(c, .fall) }
@@ -362,16 +385,51 @@ final class OverlayScene: SKScene {
 
     // MARK: окна
 
-    func dockWidth() -> CGFloat {
+    struct DockInfo {
+        var width: CGFloat = 600
+        /// высота выехавшего Дока, когда он автоскрываемый
+        var popH: CGFloat = 70
+        var autohide = false
+        var bottom = true
+    }
+
+    /// Точных размеров Дока без разрешений не узнать, поэтому ширину считаем по его настройкам
+    /// и берём с запасом: лучше кот чуть не дойдёт до края Дока, чем окажется за ним.
+    func dockInfo() -> DockInfo {
         if clock - dockCache.1 < 5 { return dockCache.0 }
         let dd = UserDefaults(suiteName: "com.apple.dock")
         var tile = CGFloat(dd?.double(forKey: "tilesize") ?? 0); if tile < 16 { tile = 48 }
-        let apps = dd?.array(forKey: "persistent-apps")?.count ?? 8
+        let tiles = dd?.array(forKey: "persistent-apps")
+        var pinned = Set<String>()
+        for t in tiles ?? [] {
+            if let d = (t as? [String: Any])?["tile-data"] as? [String: Any], let b = d["bundle-identifier"] as? String { pinned.insert(b) }
+        }
+        let apps = tiles?.count ?? 16
         let others = dd?.array(forKey: "persistent-others")?.count ?? 1
-        let recents = (dd?.object(forKey: "show-recents") as? Bool ?? true) ? 3 : 0
-        let w = CGFloat(apps + others + 2 + recents) * (tile * 1.1 + 2) + 30
-        dockCache = (min(w, W - 20), clock)
-        return dockCache.0
+        // запущенные программы, которых нет в Доке постоянно, тоже занимают в нём место
+        let running = NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && $0.bundleIdentifier != "com.apple.finder" && !pinned.contains($0.bundleIdentifier ?? "")
+        }.count
+        let recents = (dd?.object(forKey: "show-recents") as? Bool ?? true) ? max(3, running) : running
+        let n = CGFloat(apps + others + 2 + recents)
+        let w = (n + 1) * (tile * 1.1 + 3) + tile * 0.6 + 30
+        let info = DockInfo(width: min(w, W - 20), popH: tile + 22, autohide: dd?.bool(forKey: "autohide") ?? false,
+                            bottom: (dd?.string(forKey: "orientation") ?? "bottom") == "bottom")
+        dockCache = (info, clock)
+        return info
+    }
+
+    /// Автоскрываемый Док выезжает, когда курсор упирается в нижний край экрана,
+    /// и прячется, когда курсор уходит выше него.
+    func trackDock(_ dt: Double) {
+        let info = dockInfo()
+        var up = forceDock
+        if !up, info.autohide, info.bottom, mouse.x >= 0, mouse.x <= W {
+            let inside = mouse.y <= (dockUp || dockInT > 0 ? info.popH + 6 : 2)
+            if inside { dockOutT = 0; dockInT += dt } else { dockOutT += dt; if dockOutT > 0.25 { dockInT = 0 } }
+            up = inside ? (dockUp || dockInT > 0.45) : (dockUp && dockOutT <= 0.25)
+        } else if !up { dockInT = 0 }
+        if up != dockUp { dockUp = up; surfT = 0 }
     }
 
     func refreshSurfaces() {
@@ -419,12 +477,18 @@ final class OverlayScene: SKScene {
                                catOK: y + 75 < H - menuBottom, cap: 16))
         }
         // Док и «земля»
-        if dockH > 20 {
-            let dw = dockWidth(), a = (W - dw) / 2, b = (W + dw) / 2
-            out.append(Surface(id: -1, x0: a, x1: b, y: dockH, segs: [a...b], catOK: true, cap: 20))
-            out.append(Surface(id: -2, x0: 0, x1: W, y: 0, segs: [0...a, b...W], catOK: true, cap: 30))
+        // Док бывает постоянный (тогда система сама отдаёт его высоту), автоскрываемый (есть, пока выехал) и сбоку
+        groundL = max(0, screen.visibleFrame.minX - screen.frame.minX)
+        groundR = max(groundL + 1, min(W, screen.visibleFrame.maxX - screen.frame.minX))
+        let info = dockInfo()
+        let dh = dockH > 20 ? dockH : (dockUp ? info.popH : 0)
+        if dh > 20 {
+            let a = max(groundL, (W - info.width) / 2), b = min(groundR, (W + info.width) / 2)
+            out.append(Surface(id: -1, x0: a, x1: b, y: dh, segs: [a...b], catOK: true, cap: 20))
+            let sides = [groundL...a, b...groundR].filter { $0.upperBound - $0.lowerBound >= 24 }
+            out.append(Surface(id: -2, x0: 0, x1: W, y: 0, segs: sides, catOK: !sides.isEmpty, cap: 30))
         } else {
-            out.append(Surface(id: -2, x0: 0, x1: W, y: 0, segs: [0...W], catOK: true, cap: 30))
+            out.append(Surface(id: -2, x0: 0, x1: W, y: 0, segs: [groundL...groundR], catOK: true, cap: 30))
         }
         surfaces = out
         // сугробы
@@ -564,6 +628,7 @@ final class OverlayScene: SKScene {
         c.chase = nil
         if s != .jump { c.catching = false }
         if s != .walk && s != .sit { c.goal = .none }
+        if s != .fall && s != .jump { c.resume = nil }
         c.texT = 0
     }
 
@@ -574,6 +639,16 @@ final class OverlayScene: SKScene {
     }
 
     func jump(_ c: Cat, to s: Surface, x: CGFloat, after: (CatState, Double)?, height: CGFloat? = nil) {
+        // не приземляемся на другого кота: сдвигаем точку в сторону
+        var x = x
+        for o in cats where o !== c {
+            guard let p = spot(o), abs(p.y - s.y) < 50, abs(p.x - x) < gap(c, o), let seg = s.seg(at: x, tol: 6) else { continue }
+            let g = gap(c, o) + 8, d: CGFloat = x >= p.x ? 1 : -1
+            for dd in [d, -d] {
+                let nx = p.x + dd * g
+                if nx >= seg.lowerBound + 12 && nx <= seg.upperBound - 12 { x = nx; break }
+            }
+        }
         c.jFrom = CGPoint(x: c.x, y: c.y)
         c.jSurf = s.id; c.jRel = x - s.x0
         let dist = hypot(x - c.x, s.y - c.y)
@@ -600,16 +675,23 @@ final class OverlayScene: SKScene {
         if playNext(c, s) { return }
         let a = [0.5, 1.0, 1.9][max(0, min(2, Prefs.antics))]
         let wide = seg.upperBound - seg.lowerBound > 70
+        let wall = wallSpot(c, s, seg)
         var opts: [(CatState, Double)] = [
             (.walk, wide ? 5 : 0), (.sit, 2.5), (.jump, wide ? 1.4 : 4), (.sitBack, (snowing ? 1.3 : 0.5) * a),
-            (.seal, 1.0 * a), (.lounge, s.id == -2 ? 0 : 0.9 * a), (.loaf, 0.6 * a), (.sleep, 0.35), (.stand, 0.6)]
+            (.seal, 1.0 * a), (.lounge, s.id == -2 ? 0 : 0.9 * a), (.loaf, 0.6 * a), (.sleep, 0.35), (.stand, 0.6),
+            (.scratch, 0.8 * a), (.scratchWall, wall != nil ? 1.0 * a : 0)]
         opts.removeAll { $0.0 == c.state || $0.1 <= 0 }
         var r = Double.random(in: 0..<opts.reduce(0) { $0 + $1.1 })
         var pick = CatState.sit
         for o in opts { r -= o.1; if r < 0 { pick = o.0; break } }
         switch pick {
         case .walk:
-            let lo = seg.lowerBound + 24, hi = seg.upperBound - 24
+            // гуляем только по своей стороне от другого кота
+            var lo = seg.lowerBound + 24, hi = seg.upperBound - 24
+            for o in cats where o !== c {
+                guard let p = spot(o), abs(p.y - c.y) < 50 else { continue }
+                if p.x < c.x { lo = max(lo, p.x + gap(c, o) + 8) } else { hi = min(hi, p.x - gap(c, o) - 8) }
+            }
             let tx = CGFloat.random(in: lo...max(lo, hi))
             if abs(tx - c.x) < 30 { begin(c, .sit, Double.random(in: 2...5)); return }
             c.targetRel = tx - s.x0
@@ -621,6 +703,8 @@ final class OverlayScene: SKScene {
         case .lounge: begin(c, .lounge, Double.random(in: 9...18))
         case .loaf: begin(c, .loaf, Double.random(in: 8...16))
         case .sleep: c.napIdle = false; begin(c, .sleep, Double.random(in: 20...40))
+        case .scratch: begin(c, .scratch, Double.random(in: 3...5))
+        case .scratchWall: if let w = wall { goWall(c, s, w) } else { begin(c, .scratch, Double.random(in: 3...5)) }
         default: begin(c, .stand, Double.random(in: 0.8...2))
         }
     }
@@ -628,12 +712,17 @@ final class OverlayScene: SKScene {
     func step(_ c: Cat, _ dt: Double) {
         let d = CGFloat(dt)
         c.t += dt; c.anim += dt
-        c.grabCD -= dt; c.huntCD -= dt; c.shakeCD -= dt; c.happy -= dt
+        c.grabCD -= dt; c.huntCD -= dt; c.shakeCD -= dt; c.happy -= dt; c.avoidT -= dt
         if c.state != .jump && c.state != .fall && c.state != .drag {
             if let s = surface(c.surf), s.seg(at: s.x0 + c.rel, tol: 6) != nil { c.x = s.x0 + c.rel; c.y = s.y }
-            else { begin(c, .fall) }
+            else {
+                // опора ушла (например, выехал или спрятался Док) — потом вернёмся к тому же занятию
+                let was = (c.state, max(1.5, c.dur - c.t))
+                begin(c, .fall)
+                if [.stand, .sit, .sitBack, .sleep, .seal, .lounge, .loaf].contains(was.0) { c.resume = was }
+            }
         }
-        if idle > 300, [.walk, .stand, .sit, .sitBack, .lounge, .loaf].contains(c.state) {
+        if idle > 300, c.avoidT <= 0, [.walk, .stand, .sit, .sitBack, .lounge, .loaf, .scratch, .scratchWall].contains(c.state) {
             c.napIdle = true; begin(c, .sleep, 1e9)
         }
         switch c.state {
@@ -643,10 +732,15 @@ final class OverlayScene: SKScene {
             let below = surfaces.filter { $0.y <= c.y + 0.5 && $0.seg(at: c.x) != nil }.max { $0.y < $1.y }
             let land = below ?? surfaces.filter { $0.seg(at: c.x) != nil }.min { $0.y < $1.y }
             let fy = below?.y ?? land?.y ?? 0
-            if ny <= fy || below == nil {
+            if below == nil, let l = land, l.y > c.y + 1 {
+                // под котом выросла опора (выехал Док) — запрыгиваем на неё
+                jump(c, to: l, x: c.x, after: c.resume, height: 24)
+                c.jDur = 0.32
+            } else if ny <= fy || below == nil {
                 c.y = fy
                 if let l = land { c.surf = l.id; c.rel = c.x - l.x0 } else { c.surf = -2; c.rel = min(max(c.x, 30), W - 30) }
-                begin(c, .sit, Double.random(in: 1.5...3))
+                if let r = c.resume { begin(c, r.0 == .lounge && c.surf == -2 ? .loaf : r.0, r.1) }
+                else { begin(c, .sit, Double.random(in: 1.5...3)) }
             } else { c.y = ny }
         case .walk:
             guard let s = surface(c.surf) else { break }
@@ -656,6 +750,13 @@ final class OverlayScene: SKScene {
             }
             let dir: CGFloat = c.targetRel > c.rel ? 1 : -1
             c.facing = dir
+            if blocked(c, dir: dir) {
+                // впереди другой кот — не проходим сквозь него
+                c.goal = .none; c.ballCD = max(c.ballCD, 3)
+                begin(c, .sit, Double.random(in: 1.5...3)); break
+            }
+            var toWall = false
+            if case .wall = c.goal { toWall = true }
             c.rel += dir * c.look.speed * (c.chase != nil ? 2.4 : 1) * d
             c.printT -= dt
             if let p = piles[c.surf] {
@@ -665,7 +766,7 @@ final class OverlayScene: SKScene {
                 }
             }
             if abs(c.targetRel - c.rel) < (c.chase != nil ? 24 : 3) { arrive(c) }
-            else if s.seg(at: s.x0 + c.rel + dir * 14, tol: 0) == nil { next(c) }
+            else if !toWall, s.seg(at: s.x0 + c.rel + dir * 14, tol: 0) == nil { next(c) }
         case .stand, .lounge, .loaf:
             if c.t > c.dur { next(c) }
         case .sit:
@@ -732,6 +833,27 @@ final class OverlayScene: SKScene {
             if c.t > c.dur { if abs(c.targetRel - c.rel) > 6 { begin(c, .walk) } else { next(c) } }
         case .stretch:
             if c.t > c.dur { next(c) }
+        case .scratch:
+            // дерёт пол: по снегу — летит снег, по голому — остаются царапины
+            c.printT -= dt
+            if c.printT <= 0 {
+                c.printT = 0.3
+                let reach = 30 * c.look.size * c.facing
+                if let p = piles[c.surf], p.height(at: c.rel + reach) > 1.5 {
+                    p.dent(at: c.rel + reach); puff(at: CGPoint(x: c.x + reach, y: c.y + 4), 1)
+                } else {
+                    clawMarks(at: CGPoint(x: c.x + reach + CGFloat.random(in: -5...5), y: c.y), wall: false, inward: 1)
+                }
+            }
+            if c.t > c.dur { next(c) }
+        case .scratchWall:
+            c.printT -= dt
+            if c.printT <= 0 {
+                c.printT = 0.35
+                let s = c.look.size
+                clawMarks(at: CGPoint(x: c.x + c.facing * Art.wallReach * s, y: c.y + CGFloat.random(in: 46...62) * s), wall: true, inward: -c.facing)
+            }
+            if c.t > c.dur { next(c) }
         case .drag:
             c.x = min(max(mouse.x, 20), W - 20)
             c.y = mouse.y - 42 * c.look.size
@@ -741,6 +863,126 @@ final class OverlayScene: SKScene {
     func startSub(_ c: Cat, _ s: SubAct) {
         c.sub = s; c.subT = 0; c.subDone = false
         if s == .sneeze { puff(at: CGPoint(x: c.x, y: c.y + 40 * c.look.size), 4); c.headSnow = 0 }
+    }
+
+    // MARK: коты не пересекаются
+
+    /// Сколько места по горизонтали нужно двум котам, чтобы не налезать друг на друга.
+    func gap(_ a: Cat, _ b: Cat) -> CGFloat { 33 * (a.look.size + b.look.size) }
+
+    /// Где кот стоит или куда приземлится; nil — он в воздухе или в руке.
+    func spot(_ o: Cat) -> CGPoint? {
+        switch o.state {
+        case .drag, .fall: return nil
+        case .jump:
+            guard let s = surface(o.jSurf) else { return nil }
+            return CGPoint(x: s.x0 + o.jRel, y: s.y)
+        default: return CGPoint(x: o.x, y: o.y)
+        }
+    }
+
+    /// Вплотную впереди стоит другой кот.
+    func blocked(_ c: Cat, dir: CGFloat) -> Bool {
+        for o in cats where o !== c {
+            guard let p = spot(o), abs(p.y - c.y) < 50 else { continue }
+            let dx = (p.x - c.x) * dir
+            if dx > 0 && dx < gap(c, o) + 4 { return true }
+        }
+        return false
+    }
+
+    /// По пути до точки x нет другого кота.
+    func pathFree(_ c: Cat, to x: CGFloat) -> Bool {
+        let dir: CGFloat = x >= c.x ? 1 : -1
+        for o in cats where o !== c {
+            guard let p = spot(o), abs(p.y - c.y) < 50 else { continue }
+            let dx = (p.x - c.x) * dir
+            if dx > 0 && dx < abs(x - c.x) + gap(c, o) { return false }
+        }
+        return true
+    }
+
+    /// Если коты всё-таки оказались друг на друге (упали, их уронили), один отходит в свою сторону.
+    func separate() {
+        guard cats.count > 1 else { return }
+        for i in 0..<(cats.count - 1) {
+            for j in (i + 1)..<cats.count {
+                let a = cats[i], b = cats[j]
+                guard a.avoidT <= 0, b.avoidT <= 0, a.state != .jump, b.state != .jump,
+                      let pa = spot(a), let pb = spot(b), abs(pa.y - pb.y) < 50 else { continue }
+                let g = gap(a, b)
+                guard abs(pa.x - pb.x) < g - 8 else { continue }
+                overlapT += 1.0 / 30
+                // первым уходит тот, кто на ногах; спящего будим в последнюю очередь
+                func rank(_ c: Cat) -> Int { [.walk, .stand, .sit, .shake].contains(c.state) ? 0 : (c.state == .sleep ? 2 : 1) }
+                let order = rank(a) <= rank(b) ? [a, b] : [b, a]
+                var done = false
+                for m in order where !done {
+                    let o = m === a ? b : a
+                    guard let s = surface(m.surf), let seg = s.seg(at: m.x, tol: 6) else { continue }
+                    let dir: CGFloat = m.x == o.x ? (m === a ? -1 : 1) : (m.x > o.x ? 1 : -1)
+                    let tx = o.x + dir * (g + 12)
+                    guard tx >= seg.lowerBound + 16, tx <= seg.upperBound - 16 else { continue }
+                    if m.state == .sleep { m.snowCover = 0 }
+                    m.targetRel = tx - s.x0
+                    begin(m, .walk)
+                    done = true
+                }
+                if !done { for m in order where !done { done = randomJump(m) } }
+                if done { a.avoidT = 2.5; b.avoidT = 2.5 }
+            }
+        }
+    }
+
+    // MARK: когти
+
+    /// Стена рядом с котом: край экрана для «земли» и боковой край окна для кота внутри окна.
+    /// Возвращает, где коту встать и в какую сторону смотреть.
+    func wallSpot(_ c: Cat, _ s: Surface, _ seg: ClosedRange<CGFloat>, maxDist: CGFloat = 520) -> (CGFloat, CGFloat)? {
+        guard seg.upperBound - seg.lowerBound > 70 else { return nil }
+        var walls: [(CGFloat, CGFloat)] = []
+        if s.id == -2 {
+            if seg.lowerBound <= groundL + 1 { walls.append((groundL, -1)) }
+            if seg.upperBound >= groundR - 1 { walls.append((groundR, 1)) }
+        } else if s.id >= 1_000_000_000 {
+            if abs(seg.lowerBound - max(0, s.x0 + 6)) < 1 { walls.append((max(0, s.x0), -1)) }
+            if abs(seg.upperBound - min(W, s.x1 - 6)) < 1 { walls.append((min(W, s.x1), 1)) }
+        }
+        let reach = Art.wallReach * c.look.size
+        return walls.map { ($0.0 - $0.1 * reach, $0.1) }
+            .filter { abs($0.0 - c.x) < maxDist && pathFree(c, to: $0.0) }
+            .min { abs($0.0 - c.x) < abs($1.0 - c.x) }
+    }
+
+    func goWall(_ c: Cat, _ s: Surface, _ w: (CGFloat, CGFloat), dur: Double? = nil) {
+        let d = dur ?? Double.random(in: 3.5...6)
+        scratches += 1
+        if abs(w.0 - c.x) < 3 { c.facing = w.1; begin(c, .scratchWall, d); return }
+        c.targetRel = w.0 - s.x0
+        begin(c, .walk)
+        c.goal = .wall(w.1, d)
+    }
+
+    /// Следы когтей: три короткие бороздки вдоль пола или стены, которые быстро тают.
+    func clawMarks(at p: CGPoint, wall: Bool, inward: CGFloat) {
+        let path = CGMutablePath()
+        for i in 0..<3 {
+            let o = 1.5 + CGFloat(i) * 2.6, len = CGFloat.random(in: 7...11)
+            if wall {
+                path.move(to: CGPoint(x: inward * o, y: len / 2)); path.addLine(to: CGPoint(x: inward * o, y: -len / 2))
+            } else {
+                path.move(to: CGPoint(x: -len / 2, y: o)); path.addLine(to: CGPoint(x: len / 2, y: o))
+            }
+        }
+        let n = SKShapeNode(path: path)
+        n.strokeColor = NSColor(calibratedRed: 0.62, green: 0.64, blue: 0.68, alpha: 0.95)
+        n.lineWidth = pixel ? 3 : 1.3
+        n.lineCap = .round
+        n.isAntialiased = !pixel
+        n.position = pixel ? CGPoint(x: (p.x / 3).rounded() * 3, y: (p.y / 3).rounded() * 3) : p
+        n.zPosition = 9
+        addChild(n)
+        n.run(.sequence([.wait(forDuration: 1.2), .fadeOut(withDuration: 1.6), .removeFromParent()]))
     }
 
     // MARK: отрисовка кота
@@ -775,6 +1017,8 @@ final class OverlayScene: SKScene {
         case .drag: p.kind = .side; p.air = 1; p.eyes = c.look.squint ? .normal : .wide
         case .shake: p.kind = .side; p.pawLift = 1
         case .stretch: p.kind = .side; p.stretch = CGFloat(sin(min(1, c.t / c.dur) * .pi)); p.eyes = .closed
+        case .scratch: p.kind = .side; p.stretch = 0.8; p.scratch = 1; p.eyes = .closed
+        case .scratchWall: p.kind = .wall; p.eyes = c.look.squint ? .normal : .wide
         }
         if p.eyes == .normal && c.anim.truncatingRemainder(dividingBy: 4.3) < 0.16 { p.eyes = .closed }
         if p.eyes == .normal, balls.contains(where: { $0.mode == .flying && abs($0.x - c.x) < 600 }) { p.eyes = .wide }
@@ -853,6 +1097,10 @@ final class OverlayScene: SKScene {
             case "sneeze": begin(c, .sit, 4); startSub(c, .sneeze)
             case "swat": begin(c, .sit, 4); startSub(c, .swat)
             case "shake": c.targetRel = c.rel; begin(c, .shake, 1.5)
+            case "scratch": begin(c, .scratch, 6)
+            case "wall":
+                if let s = surface(c.surf), let seg = s.seg(at: c.x, tol: 6), let w = wallSpot(c, s, seg, maxDist: 1e9) { goWall(c, s, w, dur: 7) }
+                else { begin(c, .scratch, 6) }
             default: break
             }
         }

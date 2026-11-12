@@ -42,7 +42,7 @@ final class Snowman {
     var height: CGFloat { SnowArt.centers(radii).last! + radii.last! }
 }
 
-enum Goal { case none, knock(Snowman), sitBy, napBy }
+enum Goal { case none, knock(Snowman), sitBy, napBy, wall(CGFloat, Double) }
 
 enum SnowArt {
     static func centers(_ radii: [CGFloat]) -> [CGFloat] {
@@ -288,7 +288,7 @@ extension OverlayScene {
             c.ballCD -= dt
             guard c.chase == nil, c.ballCD <= 0, c.sub == .none, [.walk, .stand, .sit, .sitBack, .loaf, .lounge].contains(c.state) else { continue }
             if case .none = c.goal {} else { continue }
-            let near = balls.filter { ($0.mode == .rolling || $0.mode == .resting) && $0.r < 12 && $0.surf == c.surf && abs($0.x - c.x) < 600 && $0.restT < 20 }
+            let near = balls.filter { ($0.mode == .rolling || $0.mode == .resting) && $0.r < 12 && $0.surf == c.surf && abs($0.x - c.x) < 600 && $0.restT < 20 && pathFree(c, to: $0.x) }
                 .min { abs($0.x - c.x) < abs($1.x - c.x) }
             if let b = near { begin(c, .walk); c.chase = b; c.targetRel = b.rel }
         }
@@ -428,6 +428,7 @@ extension OverlayScene {
             begin(c, .sit, 2.4); startSub(c, .swat)
         case .sitBy: begin(c, .sit, Double.random(in: 6...12))
         case .napBy: c.napIdle = false; begin(c, .sleep, Double.random(in: 20...40))
+        case .wall(let dir, let dur): c.facing = dir; begin(c, .scratchWall, dur)
         case .none: next(c)
         }
     }
@@ -498,7 +499,7 @@ extension OverlayScene {
         let side: CGFloat = c.x < sm.x ? -1 : 1
         var tx = sm.x + side * (sm.radii[0] + 24)
         if s.seg(at: tx) == nil { tx = sm.x - side * (sm.radii[0] + 24) }
-        guard s.seg(at: tx) != nil else { return false }
+        guard s.seg(at: tx) != nil, pathFree(c, to: tx) else { return false }
         c.targetRel = tx - s.x0
         begin(c, .walk)
         c.goal = goal

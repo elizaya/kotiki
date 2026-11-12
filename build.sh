@@ -2,6 +2,8 @@
 # Builds Kotiki.app. Only the Command Line Tools are needed: xcode-select --install
 set -euo pipefail
 cd "$(dirname "$0")"
+# The release tag must be v$VERSION: the app compares its own version with the latest release tag.
+VERSION=1.1
 APP="build/Kotiki.app"
 rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/tmp
 for arch in arm64 x86_64; do
@@ -29,8 +31,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>kotiki</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -38,4 +40,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 codesign --force -s - "$APP" >/dev/null 2>&1 || true
 rm -rf build/tmp
+# the archive to attach to a GitHub release; the updater looks for this exact name
+ditto -c -k --keepParent "$APP" build/Kotiki.zip
 echo "Done: $APP"

@@ -65,6 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // отладка: KOTIKI_DEMO=seal KOTIKI_SNAPSHOT=/path.png
         let env = ProcessInfo.processInfo.environment
+        if env["KOTIKI_SNAPSHOT"] == nil { Updater.shared.start() }
+        if env["KOTIKI_DOCK"] != nil { scene.forceDock = true }
         if let d = env["KOTIKI_DEMO"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { self.scene.demo(d) }
         }
@@ -73,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 if let sim = Double(env["KOTIKI_SIM"] ?? "") {
                     self.view.isPaused = true; self.scene.last = 0
+                    self.scene.sim = true
                     var t = 100.0
                     let demoAt = Double(env["KOTIKI_DEMO_AT"] ?? "") ?? sim - 4
                     var fired = false
@@ -90,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 print(self.scene.surfaces.map { "\($0.id) y=\(Int($0.y)) \($0.segs.map { "\(Int($0.lowerBound))-\(Int($0.upperBound))" })" }.joined(separator: "\n"))
                 for (id, p) in self.scene.piles { print("pile", id, "max", p.h.max() ?? 0, "avg", p.h.reduce(0, +) / Float(max(1, p.h.count)), "flakes", self.scene.flakes.count, "snow", Prefs.snow, "style", Prefs.style) }
+                print("overlapT", self.scene.overlapT, "wallTrips", self.scene.scratches, "dockUp", self.scene.dockUp)
                 print("selfPlays", self.scene.selfPlays, "bats", self.scene.bats, "knocks", self.scene.knocks, "snowmen", self.scene.snowmen.map { $0.radii.count })
                 print("clock", self.scene.clock, "visible", self.panel.isVisible, "occl", self.panel.occlusionState.contains(.visible), "paused", self.view.isPaused, self.scene.isPaused, "frame", self.panel.frame)
                 print(self.scene.cats.map { "\($0.look.name) \($0.state) x=\(Int($0.x)) y=\(Int($0.y)) surf=\($0.surf)" })
@@ -206,9 +210,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         let demos = [("seal", "Тюлень"), ("window", "Смотрит на снег"), ("lounge", "Барин"), ("loaf", "«Это моё окно»"),
                      ("hunt", "Охота на курсор"), ("sleep", "Сон"), ("sneeze", "Чих"), ("swat", "Ловит снежинку"),
-                     ("shake", "Трясёт лапой"), ("snowman", "Снеговик (для проверки)"), ("judge", "Осуждающий взгляд")]
+                     ("shake", "Трясёт лапой"), ("scratch", "Точит когти об пол"), ("wall", "Точит когти об стену"), ("snowman", "Снеговик (для проверки)"), ("judge", "Осуждающий взгляд")]
         menu.addItem(sub("Показать сценку", demos.map { k, n in item(n) { self.scene.demo(k) } }))
         menu.addItem(.separator())
+        let up = Updater.shared
+        if let s = up.staged {
+            menu.addItem(item("Обновить до \(s.version) и перезапустить") { up.install() })
+        } else if let m = up.manual {
+            menu.addItem(item("Доступна версия \(m.version)…") { NSWorkspace.shared.open(m.page) })
+        }
+        let state = [Updater.Status.checking: " — проверяю…", .upToDate: " — последняя", .failed: " — не удалось проверить"][up.status] ?? ""
+        menu.addItem(sub("Обновления", [
+            NSMenuItem(title: "Версия \(up.current)\(state)", action: nil, keyEquivalent: ""),
+            item("Обновлять автоматически", on: Prefs.autoUpdate) { Prefs.autoUpdate.toggle() },
+            item("Проверить сейчас") { up.check() }]))
         menu.addItem(item("Выйти") { NSApp.terminate(nil) })
     }
 }

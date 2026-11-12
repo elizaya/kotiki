@@ -48,6 +48,9 @@ Everything is controlled from the cat-head icon in the menu bar. The menu is in 
 - Press and drag to carry a cat. Drop it over a window and it sits there; miss and it falls to whatever is below.
 - Wiggle the cursor quickly near a cat and it hunts it.
 - Leave the Mac idle for five minutes and the cats curl up and get snowed on.
+- Now and then a cat sharpens its claws: on the floor, or standing up against a wall (the edge of the screen or the side of a window it is sitting in).
+- The cats sit on the Dock. If the Dock hides automatically, they hop onto it when it slides out and drop back down when it goes away.
+- With both cats on, they keep to their own side and do not walk through each other.
 
 **Snow**
 
@@ -77,6 +80,7 @@ While ⌥ is held, clicks do not reach the windows underneath.
 - Cursor trap: a cat lying belly-up grabs the cursor if you hover over its belly
 - Judging stare at night: between 1:00 and 5:00 a big cat face rises in the corner
 - Show a scene: trigger any scene by hand
+- Updates: current version, automatic updates on/off, check now
 - Quit
 
 ## If something is off
@@ -89,11 +93,17 @@ While ⌥ is held, clicks do not reach the windows underneath.
 
 ## Update and remove
 
-Update:
+The app updates itself. A few times a day it looks at the [latest release](https://github.com/elizaya/kotiki/releases/latest), downloads the new version and restarts into it once the Mac has been idle for five minutes. If you do not want to wait, the menu shows "Обновить до … и перезапустить" as soon as the download is ready. Turn this off in the menu under Обновления.
+
+If the app cannot replace itself (for example, it was opened straight from Downloads), the menu offers a link to the release page instead. Move `Kotiki.app` to Applications to get automatic updates.
+
+If you built it yourself:
 
 ```bash
 git pull && bash build.sh
 ```
+
+**Publishing a release.** Bump `VERSION` in `build.sh`, run `bash build.sh`, create a release tagged `v` + that version and attach `build/Kotiki.zip`. Installed copies pick it up on their own.
 
 Remove: quit from the menu, then delete `Kotiki.app`. Settings are removed with:
 
@@ -103,6 +113,7 @@ defaults delete local.kotiki.tom-i-pirozhok
 
 ## Roadmap
 
+- Cats interacting with each other (for now they only keep apart): greeting, grooming, chasing, sleeping side by side
 - Windows version
 - Set up your own cat
 - Season selection

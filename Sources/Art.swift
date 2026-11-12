@@ -6,7 +6,7 @@ import AppKit
 
 enum ArtStyle: Int { case pixel = 0, illustration = 1 }
 enum Eyes { case normal, closed, wide, happy }
-enum PoseKind { case side, sit, sitBack, curl, seal, lounge, loaf, face }
+enum PoseKind { case side, sit, sitBack, curl, seal, lounge, loaf, face, wall }
 
 struct Pose {
     var kind = PoseKind.sit
@@ -17,6 +17,7 @@ struct Pose {
     var air: CGFloat = 0
     var pawLift: CGFloat = 0
     var stretch: CGFloat = 0
+    var scratch: CGFloat = 0
     var headTurn: CGFloat = 0
     var headDip: CGFloat = 0
     var grab: CGFloat = 0
@@ -199,6 +200,7 @@ final class Painter {
         case .lounge: lounge(p)
         case .loaf: loaf(p)
         case .face: face(p)
+        case .wall: wall(p)
         }
     }
 
@@ -214,7 +216,7 @@ final class Painter {
         func foot(_ hip: CGFloat, _ off: CGFloat, front: Bool) -> CGPoint {
             var fx = hip + p.walk * 5 * sin(ph + off)
             var fy = 3.2 + p.walk * max(0, cos(ph + off)) * 3
-            if front { fx += p.air * 11 + p.stretch * 12; fy += p.air * 5 } else { fx -= p.air * 11; fy += p.air * 2 }
+            if front { fx += p.air * 11 + p.stretch * 12 + p.scratch * 4.5 * sin(t * 13 + off); fy += p.air * 5 } else { fx -= p.air * 11; fy += p.air * 2 }
             return P(fx, fy)
         }
         let tb = P(-rx + 3, by + 2)
@@ -238,6 +240,25 @@ final class Painter {
         limb(P(hipF, hipY - p.stretch * 5), nf, 7, L.furLight); paw(nf, L.furLight)
         limb(P(hipR, hipY), nr, 7, L.furLight); paw(nr, L.furLight)
         head(P(rx * 0.72 + 3, by + ry * 0.5 + 2 - p.crouch * 3 - p.stretch * 9), eyes: p.eyes, shift: 2.5)
+    }
+
+    /// Точит когти о стену: стоит на задних лапах боком к нам, стена — в Art.wallReach впереди.
+    func wall(_ p: Pose) {
+        let L = look, t = CGFloat(p.t)
+        let wx = Art.wallReach - 3.5
+        let hy = 8 + L.bodyLen * 1.6, ph = t * 11
+        func arm(_ from: CGPoint, _ off: CGFloat, _ w: CGFloat, _ col: CGColor) {
+            let tip = P(wx, hy + 9 + 6 * sin(ph + off))
+            limb(from, tip, w, col); ell(tip.x, tip.y + 1, 3.4, 4.8, col)
+        }
+        curve(P(-13, 6), P(-24, 1), P(-14 - L.tailLen * 0.7, 5 + 3 * sin(t * 3)), L.tailW, L.fur)
+        arm(P(13, hy - 13), 0, 6.5, L.furDark)
+        limb(P(1, 9), P(6, 3.2), 6.5, L.furDark); paw(P(6, 3.2), L.furDark)
+        ell(-5, 12, 13.5, 12.5, L.fur)
+        ell(1, 4 + L.bodyLen * 0.9, 12.5 * L.chub, L.bodyLen * 0.9, L.fur, rot: -0.32)
+        limb(P(-9, 9), P(-4, 3.2), 7, L.furLight); paw(P(-4, 3.2), L.furLight)
+        head(P(-3, hy), eyes: p.eyes, shift: 4, rot: 0.15)
+        arm(P(11, hy - 16), .pi, 7, L.furLight)
     }
 
     func sit(_ p: Pose, back: Bool) {
@@ -333,6 +354,8 @@ final class Painter {
 enum Art {
     static let canvas = CGSize(width: 126, height: 99)
     static let ground: CGFloat = 18
+    /// расстояние от кота до стены, о которую он точит когти (до масштаба кота)
+    static let wallReach: CGFloat = 32
 
     static func render(_ look: CatLook, _ style: ArtStyle, _ pose: Pose) -> CGImage {
         let pixel = style == .pixel
@@ -390,6 +413,8 @@ enum Art {
         add("jump") { $0.kind = .side; $0.air = 1; $0.eyes = .wide }
         add("shake") { $0.kind = .side; $0.pawLift = 1 }
         add("stretch") { $0.kind = .side; $0.stretch = 1; $0.eyes = .closed }
+        add("scratch") { $0.kind = .side; $0.stretch = 0.8; $0.scratch = 1; $0.eyes = .closed }
+        add("wall") { $0.kind = .wall }
         add("sit") { $0.kind = .sit; $0.snow = 0.8 }
         add("swat") { $0.kind = .sit; $0.pawLift = 1; $0.eyes = .wide }
         add("happy") { $0.kind = .sit; $0.eyes = .happy }
