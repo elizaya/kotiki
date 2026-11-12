@@ -286,7 +286,7 @@ extension OverlayScene {
         // коты и снежки
         for c in cats {
             c.ballCD -= dt
-            guard c.chase == nil, c.ballCD <= 0, c.sub == .none, [.walk, .stand, .sit, .sitBack, .loaf, .lounge].contains(c.state) else { continue }
+            guard c.chase == nil, c.ballCD <= 0, c.sub == .none, c.meet == nil, c.look.can("snow"), [.walk, .stand, .sit, .sitBack, .loaf, .lounge].contains(c.state) else { continue }
             if case .none = c.goal {} else { continue }
             let near = balls.filter { ($0.mode == .rolling || $0.mode == .resting) && $0.r < 12 && $0.surf == c.surf && abs($0.x - c.x) < 600 && $0.restT < 20 && pathFree(c, to: $0.x) }
                 .min { abs($0.x - c.x) < abs($1.x - c.x) }
@@ -323,7 +323,7 @@ extension OverlayScene {
             if touching {
                 if c.state == .jump && c.catching { shatter(b); c.happy = 1.6; c.catching = false; heart(at: CGPoint(x: c.x, y: c.y + 62 * s)); return }
                 if b.thrown && speed > 250 && c.state != .jump && c.state != .fall { hitCat(c, b); return }
-            } else if b.thrown, !b.catchTried, c.ballCD <= 0, !c.busy, abs(b.x - c.x) < 150, b.y - c.y > 20, b.y - c.y < 180 {
+            } else if b.thrown, !b.catchTried, c.ballCD <= 0, !c.busy, c.look.can("snow"), abs(b.x - c.x) < 150, b.y - c.y > 20, b.y - c.y < 180 {
                 b.catchTried = true
                 if Double.random(in: 0...1) < 0.45, let sf = surface(c.surf), let seg = sf.seg(at: c.x, tol: 6) {
                     let tx = min(max(b.x + b.vx * 0.25, seg.lowerBound + 20), max(seg.lowerBound + 20, seg.upperBound - 20))
@@ -427,7 +427,7 @@ extension OverlayScene {
             c.facing = sm.x >= c.x ? 1 : -1
             begin(c, .sit, 2.4); startSub(c, .swat)
         case .sitBy: begin(c, .sit, Double.random(in: 6...12))
-        case .napBy: c.napIdle = false; begin(c, .sleep, Double.random(in: 20...40))
+        case .napBy: dozeOff(c, Double.random(in: 20...40))
         case .wall(let dir, let dur): c.facing = dir; begin(c, .scratchWall, dur)
         case .none: next(c)
         }
@@ -464,10 +464,11 @@ extension OverlayScene {
     /// Дела у снеговика: посидеть рядом, поспать под боком, а Том иногда сбивает голову.
     func playNext(_ c: Cat, _ s: Surface) -> Bool {
         guard Prefs.play else { return false }
+        let breaks = Prefs.tomBreaks && c.look.can("knock")
         let a = [0.5, 1.0, 1.9][max(0, min(2, Prefs.antics))]
         // кот сам лепит себе снежок и гоняет его — и в одиночку, и вдвоём
         let hasSnow = (piles[s.id]?.height(at: c.rel) ?? 0) > 2
-        if hasSnow, Double.random(in: 0...1) < 0.2 * a,
+        if hasSnow, c.look.can("snow"), Double.random(in: 0...1) < 0.2 * a,
            !balls.contains(where: { $0.r < 12 && $0.surf == c.surf && abs($0.x - c.x) < 600 }) {
             let dir = batDir(c)
             c.facing = dir
@@ -482,7 +483,7 @@ extension OverlayScene {
             return true
         }
         // Том идёт к снеговику даже с другого окна
-        if Prefs.tomBreaks, Double.random(in: 0...1) < 0.3 * a,
+        if breaks, Double.random(in: 0...1) < 0.3 * a,
            let far = snowmen.first(where: { $0.surf != c.surf && ripe($0) && !$0.node.isHidden }),
            let fs = surface(far.surf), fs.catOK {
             let side: CGFloat = c.x < far.x ? -1 : 1
@@ -493,7 +494,7 @@ extension OverlayScene {
         guard let sm = snowmen.first(where: { $0.surf == c.surf && !$0.node.isHidden && abs($0.x - c.x) < 1200 }) else { return false }
         let r = Double.random(in: 0...1)
         let goal: Goal
-        if Prefs.tomBreaks && ripe(sm) && r < 0.6 * a { goal = .knock(sm) }
+        if breaks && ripe(sm) && r < 0.6 * a { goal = .knock(sm) }
         else if r > 0.85 { goal = c.look.squint || Bool.random() ? .sitBy : .napBy }
         else { return false }
         let side: CGFloat = c.x < sm.x ? -1 : 1

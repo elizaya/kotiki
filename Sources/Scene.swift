@@ -24,6 +24,20 @@ enum Prefs {
     static var tomBreaks: Bool { get { bool("tomBreaks", true) } set { d.set(newValue, forKey: "tomBreaks") } }
     static var judge: Bool { get { bool("judge", true) } set { d.set(newValue, forKey: "judge") } }
     static var autoUpdate: Bool { get { bool("autoUpdate", true) } set { d.set(newValue, forKey: "autoUpdate") } }
+    /// сколько своих котов можно завести
+    static let maxSpecs = 4
+    /// свои коты
+    static var specs: [CatSpec] {
+        get {
+            if let a = d.array(forKey: "customCats") as? [[String: Any]] { return a.map { CatSpec(dict: $0) } }
+            // в первой версии свой кот был один и лежал под другими ключами
+            guard let one = d.dictionary(forKey: "customCat") else { return [] }
+            var s = CatSpec(dict: one)
+            s.id = "first"; s.on = bool("custom", false)
+            return [s]
+        }
+        set { d.set(newValue.map { $0.dict }, forKey: "customCats") }
+    }
 }
 
 // MARK: поверхности и сугробы
@@ -149,10 +163,10 @@ struct Flake {
 // MARK: кот
 
 enum CatState { case stand, walk, sit, sitBack, sleep, seal, lounge, loaf, crouch, jump, fall, shake, stretch, drag, scratch, scratchWall }
-enum SubAct { case none, swat, sneeze }
+enum SubAct { case none, swat, sneeze, yawn }
 
 final class Cat {
-    let look: CatLook
+    var look: CatLook
     let node = SKSpriteNode()
     var surf = -2
     var rel: CGFloat = 0
@@ -195,6 +209,22 @@ final class Cat {
     var avoidT = 0.0
     /// чем кот был занят, когда из-под него ушла опора (Док выехал или спрятался)
     var resume: (CatState, Double)?
+    /// сколько кот смотрит на курсор, прежде чем зевнуть
+    var stare = 0.0
+    /// через сколько секунд зевнёт вслед за другим котом
+    var yawnIn = 0.0
+    /// зевает «за компанию» — сам никого не заражает
+    var yawnEcho = false
+    /// чем заняться, когда досидит (например, зевнул — и спать)
+    var sitThen: (CatState, Double)?
+    /// только что проснулся
+    var woke = false
+    /// бежит, а не идёт
+    var run = false
+    /// тянется носом к другому коту
+    var nuzzle = false
+    /// встреча с другим котом, в которой он сейчас участвует
+    var meet: Meet?
 
     init(_ look: CatLook) {
         self.look = look
@@ -255,6 +285,10 @@ final class OverlayScene: SKScene {
     var knocks = 0
     var grabStart = CGPoint.zero
     var dragging = false
+    var meet: Meet?
+    var meetCD = Double.random(in: 40...90)
+    var meets = 0
+    var yawns = 0
 
     lazy var roundTex: SKTexture = {
         let n = 16
@@ -283,18 +317,29 @@ final class OverlayScene: SKScene {
         applyPrefs()
     }
 
-    func applyPrefs() {
-        // коты
-        let want: [CatLook] = (Prefs.tom ? [.tom] : []) + (Prefs.pirozhok ? [.pirozhok] : [])
-        for c in cats where !want.contains(where: { $0.name == c.look.name }) { c.node.removeFromParent() }
-        cats.removeAll { c in !want.contains(where: { $0.name == c.look.name }) }
-        for l in want where !cats.contains(where: { $0.look.name == l.name }) {
+    func applyCats() {
+        var want: [CatLook] = (Prefs.tom ? [.tom] : []) + (Prefs.pirozhok ? [.pirozhok] : [])
+        let own = Prefs.specs.filter { $0.on }.map { $0.look }
+        want += own
+        for c in cats where !want.contains(where: { $0.id == c.look.id }) { c.node.removeFromParent() }
+        cats.removeAll { c in !want.contains(where: { $0.id == c.look.id }) }
+        for l in want {
+            // у своего кота внешность меняется на ходу
+            if let c = cats.first(where: { $0.look.id == l.id }) { c.look = l; continue }
             let c = Cat(l)
             c.x = CGFloat.random(in: W * 0.2...W * 0.8); c.y = H + 40; c.state = .fall
             addChild(c.node); cats.append(c)
         }
         // у каждого кота свой слой: на одном слое спрайты мигают, когда перекрываются
-        for c in cats { c.texT = 0; c.node.zPosition = c.look.name == CatLook.pirozhok.name ? 10.5 : 10 }
+        for c in cats {
+            c.texT = 0
+            let i = own.firstIndex { $0.id == c.look.id } ?? 0
+            c.node.zPosition = ["tom": 10, "pirozhok": 10.5][c.look.id] ?? 10.1 + 0.05 * CGFloat(i)
+        }
+    }
+
+    func applyPrefs() {
+        applyCats()
         // снег
         let n = [0, 70, 150, 330][max(0, min(3, Prefs.snow))]
         while flakes.count > n { flakes.removeLast().node.removeFromParent() }
@@ -350,6 +395,7 @@ final class OverlayScene: SKScene {
             } else { c.hoverT = 0 }
             step(c, dt)
         }
+        stepMeet(dt)
         separate()
         for c in cats { paint(c, dt) }
         if let c = grabCat {
@@ -600,7 +646,7 @@ final class OverlayScene: SKScene {
         for i in 1..<trail.count { path += hypot(trail[i].0.x - trail[i - 1].0.x, trail[i].0.y - trail[i - 1].0.y) }
         let net = hypot(mouse.x - first.0.x, mouse.y - first.0.y)
         guard path > 550, net < 260 else { return }
-        for c in cats where c.huntCD <= 0 && !c.busy && abs(mouse.x - c.x) < 380 && abs(mouse.y - c.y) < 320 {
+        for c in cats where c.huntCD <= 0 && !c.busy && c.meet == nil && c.look.can("hunt") && abs(mouse.x - c.x) < 380 && abs(mouse.y - c.y) < 320 {
             startHunt(c)
         }
     }
@@ -629,6 +675,7 @@ final class OverlayScene: SKScene {
         if s != .jump { c.catching = false }
         if s != .walk && s != .sit { c.goal = .none }
         if s != .fall && s != .jump { c.resume = nil }
+        c.sitThen = nil; c.woke = false; c.run = false; c.nuzzle = false; c.yawnIn = 0
         c.texT = 0
     }
 
@@ -636,6 +683,15 @@ final class OverlayScene: SKScene {
         if c.snowCover > 0.15 { puff(at: CGPoint(x: c.x, y: c.y + 24 * c.look.size), Int(c.snowCover * 14) + 3) }
         c.snowCover = 0
         begin(c, .stretch, 1.3)
+        c.woke = true
+    }
+
+    /// Засыпает: сначала садится и зевает, если умеет.
+    func dozeOff(_ c: Cat, _ dur: Double) {
+        c.napIdle = false
+        guard c.look.can("yawn") else { begin(c, .sleep, dur); return }
+        begin(c, .sit, 2.7); startSub(c, .yawn)
+        c.stare = 0.5; c.sitThen = (.sleep, dur)
     }
 
     func jump(_ c: Cat, to s: Surface, x: CGFloat, after: (CatState, Double)?, height: CGFloat? = nil) {
@@ -672,14 +728,20 @@ final class OverlayScene: SKScene {
     func next(_ c: Cat) {
         guard let s = surface(c.surf), let seg = s.seg(at: s.x0 + c.rel, tol: 6) else { begin(c, .fall); return }
         c.goal = .none
+        if c.meet != nil { meetNext(c); return }
         if playNext(c, s) { return }
         let a = [0.5, 1.0, 1.9][max(0, min(2, Prefs.antics))]
         let wide = seg.upperBound - seg.lowerBound > 70
         let wall = wallSpot(c, s, seg)
+        // характер: активный больше ходит и прыгает, ленивый больше лежит
+        let L = c.look, act = 0.5 + L.activity, lazy = 1.5 - L.activity
+        func can(_ k: String) -> Double { L.can(k) ? 1 : 0 }
         var opts: [(CatState, Double)] = [
-            (.walk, wide ? 5 : 0), (.sit, 2.5), (.jump, wide ? 1.4 : 4), (.sitBack, (snowing ? 1.3 : 0.5) * a),
-            (.seal, 1.0 * a), (.lounge, s.id == -2 ? 0 : 0.9 * a), (.loaf, 0.6 * a), (.sleep, 0.35), (.stand, 0.6),
-            (.scratch, 0.8 * a), (.scratchWall, wall != nil ? 1.0 * a : 0)]
+            (.walk, wide ? 5 * act : 0), (.sit, 2.5), (.jump, (wide ? 1.4 : 4) * act),
+            (.sitBack, (snowing ? 1.3 : 0.5) * a * can("window")),
+            (.seal, 1.0 * a * can("seal")), (.lounge, s.id == -2 ? 0 : 0.9 * a * lazy * can("lounge")),
+            (.loaf, 0.6 * a * lazy * can("loaf")), (.sleep, 0.35 * lazy), (.stand, 0.6),
+            (.scratch, 0.8 * a * can("scratch")), (.scratchWall, wall != nil ? 1.0 * a * can("scratch") : 0)]
         opts.removeAll { $0.0 == c.state || $0.1 <= 0 }
         var r = Double.random(in: 0..<opts.reduce(0) { $0 + $1.1 })
         var pick = CatState.sit
@@ -702,7 +764,7 @@ final class OverlayScene: SKScene {
         case .seal: begin(c, .seal, Double.random(in: 7...13))
         case .lounge: begin(c, .lounge, Double.random(in: 9...18))
         case .loaf: begin(c, .loaf, Double.random(in: 8...16))
-        case .sleep: c.napIdle = false; begin(c, .sleep, Double.random(in: 20...40))
+        case .sleep: dozeOff(c, Double.random(in: 20...40))
         case .scratch: begin(c, .scratch, Double.random(in: 3...5))
         case .scratchWall: if let w = wall { goWall(c, s, w) } else { begin(c, .scratch, Double.random(in: 3...5)) }
         default: begin(c, .stand, Double.random(in: 0.8...2))
@@ -723,6 +785,7 @@ final class OverlayScene: SKScene {
             }
         }
         if idle > 300, c.avoidT <= 0, [.walk, .stand, .sit, .sitBack, .lounge, .loaf, .scratch, .scratchWall].contains(c.state) {
+            if c.meet != nil { endMeet() }
             c.napIdle = true; begin(c, .sleep, 1e9)
         }
         switch c.state {
@@ -752,16 +815,23 @@ final class OverlayScene: SKScene {
             c.facing = dir
             if blocked(c, dir: dir) {
                 // впереди другой кот — не проходим сквозь него
+                if let m = c.meet {
+                    // в догонялках это значит «догнал»
+                    // (а убегающий, упёршись в третьего кота, просто останавливается)
+                    let o = c === m.a ? m.b : m.a
+                    if m.kind == .chase, m.phase == 2, c === m.runner || abs(o.x - c.x) < gap(c, o) + 40 { meetNext(c); break }
+                    endMeet()
+                }
                 c.goal = .none; c.ballCD = max(c.ballCD, 3)
                 begin(c, .sit, Double.random(in: 1.5...3)); break
             }
             var toWall = false
             if case .wall = c.goal { toWall = true }
-            c.rel += dir * c.look.speed * (c.chase != nil ? 2.4 : 1) * d
+            c.rel += dir * c.look.speed * (c.chase != nil || c.run ? 2.4 : 1) * d
             c.printT -= dt
             if let p = piles[c.surf] {
                 if c.printT <= 0 { c.printT = 0.22; p.dent(at: c.rel + dir * 8) }
-                if c.shakeCD <= 0, c.chase == nil, p.height(at: c.rel + dir * 14) > 4.5, Double.random(in: 0...1) < dt * 0.6 {
+                if c.shakeCD <= 0, c.chase == nil, !c.run, p.height(at: c.rel + dir * 14) > 4.5, Double.random(in: 0...1) < dt * 0.6 {
                     c.shakeCD = 12; begin(c, .shake, 1.2); break
                 }
             }
@@ -772,9 +842,20 @@ final class OverlayScene: SKScene {
         case .sit:
             if snowing { c.headSnow = min(1, c.headSnow + d / 30) }
             if c.sub == .none {
+                if c.yawnIn > 0 {
+                    // другой кот зевнул — зеваем следом
+                    c.yawnIn -= dt
+                    if c.yawnIn <= 0 { startSub(c, .yawn); c.stare = 0.2; c.yawnEcho = true }
+                    break
+                }
                 c.subCD -= dt * [0.6, 1.0, 1.6][max(0, min(2, Prefs.antics))]
-                if c.subCD <= 0 && snowing { startSub(c, Bool.random() ? .swat : .sneeze) }
-                else if c.t > c.dur { next(c) }
+                if c.subCD <= 0 {
+                    var subs: [SubAct] = snowing ? [.swat, .sneeze] : []
+                    if c.look.can("yawn"), Double.random(in: 0...1) < 0.35 { subs.append(.yawn) }
+                    if let s = subs.randomElement() { startSub(c, s) } else { c.subCD = Double.random(in: 4...9) }
+                } else if c.t > c.dur {
+                    if let n = c.sitThen { begin(c, n.0, n.1) } else { next(c) }
+                }
             } else {
                 c.subT += dt
                 if c.sub == .swat, !c.subDone, c.subT > 0.4 {
@@ -784,7 +865,18 @@ final class OverlayScene: SKScene {
                     if let i = flakes.indices.min(by: { hypot(flakes[$0].x - paw.x, flakes[$0].y - paw.y) < hypot(flakes[$1].x - paw.x, flakes[$1].y - paw.y) }),
                        hypot(flakes[i].x - paw.x, flakes[i].y - paw.y) < 70 { respawn(&flakes[i]) }
                 }
-                if c.subT > (c.sub == .swat ? 0.9 : 0.7) { c.sub = .none; c.subCD = Double.random(in: 4...9) }
+                if c.sub == .yawn, !c.subDone, c.subT > c.stare + 0.8 {
+                    c.subDone = true; yawns += 1
+                    // зевота заразна: кто сидит рядом, зевнёт следом
+                    if !c.yawnEcho {
+                        for o in cats where o !== c && o.state == .sit && o.sub == .none && o.yawnIn <= 0 && o.look.can("yawn")
+                            && hypot(o.x - c.x, o.y - c.y) < 600 {
+                            o.yawnIn = Double.random(in: 1.2...2.4); o.dur = max(o.dur, o.t + 5)
+                        }
+                    }
+                }
+                let len = c.sub == .swat ? 0.9 : (c.sub == .yawn ? c.stare + Self.yawnLen : 0.7)
+                if c.subT > len { c.sub = .none; c.subCD = Double.random(in: 4...9); c.yawnEcho = false }
             }
         case .sitBack:
             if snowing { c.headSnow = min(1, c.headSnow + d / 30) }
@@ -810,6 +902,7 @@ final class OverlayScene: SKScene {
             } else if c.t > c.dur { next(c) }
         case .crouch:
             if c.t > c.dur {
+                if c.meet != nil { next(c); break }
                 guard let s = surface(c.surf), let seg = s.seg(at: c.x, tol: 6) else { begin(c, .fall); break }
                 var tx = min(max(mouse.x, c.x - 240), c.x + 240)
                 tx = min(max(tx, seg.lowerBound + 20), max(seg.lowerBound + 20, seg.upperBound - 20))
@@ -826,13 +919,20 @@ final class OverlayScene: SKScene {
                 c.surf = s.id; c.rel = c.jRel
                 if s.seg(at: to.x, tol: 6) == nil { begin(c, .fall); break }
                 piles[s.id]?.dent(at: c.rel)
-                if let a = c.after { c.after = nil; begin(c, a.0, a.1) } else { begin(c, .sit, Double.random(in: 2...4)) }
+                if let a = c.after { c.after = nil; begin(c, a.0, a.1) }
+                else if c.meet != nil { begin(c, .stand, 0.15) }
+                else { begin(c, .sit, Double.random(in: 2...4)) }
                 if c.state == .sit { c.happy = 0 }
             }
         case .shake:
             if c.t > c.dur { if abs(c.targetRel - c.rel) > 6 { begin(c, .walk) } else { next(c) } }
         case .stretch:
-            if c.t > c.dur { next(c) }
+            if c.t > c.dur {
+                // спросонья зевает
+                if c.woke, c.meet == nil, c.look.can("yawn"), Double.random(in: 0...1) < 0.6 {
+                    begin(c, .sit, 3); startSub(c, .yawn); c.stare = 0.4
+                } else { next(c) }
+            }
         case .scratch:
             // дерёт пол: по снегу — летит снег, по голому — остаются царапины
             c.printT -= dt
@@ -860,15 +960,23 @@ final class OverlayScene: SKScene {
         }
     }
 
+    /// сколько длится сам зевок
+    static let yawnLen = 1.9
+
     func startSub(_ c: Cat, _ s: SubAct) {
         c.sub = s; c.subT = 0; c.subDone = false
+        if s == .yawn { c.stare = Double.random(in: 2.5...4.5); c.yawnEcho = false }
         if s == .sneeze { puff(at: CGPoint(x: c.x, y: c.y + 40 * c.look.size), 4); c.headSnow = 0 }
     }
 
     // MARK: коты не пересекаются
 
     /// Сколько места по горизонтали нужно двум котам, чтобы не налезать друг на друга.
-    func gap(_ a: Cat, _ b: Cat) -> CGFloat { 33 * (a.look.size + b.look.size) }
+    func gap(_ a: Cat, _ b: Cat) -> CGFloat {
+        // на встрече коты могут сидеть и спать вплотную
+        if let m = a.meet, m === b.meet, let t = m.tight { return t }
+        return 33 * (a.look.size + b.look.size)
+    }
 
     /// Где кот стоит или куда приземлится; nil — он в воздухе или в руке.
     func spot(_ o: Cat) -> CGPoint? {
@@ -999,14 +1107,23 @@ final class OverlayScene: SKScene {
         guard c.texT <= 0 else { return }
         c.texT = 1.0 / 12
         var p = Pose()
-        p.t = c.chase != nil ? c.anim * 1.9 : c.anim
+        p.t = c.chase != nil || c.run ? c.anim * 1.9 : c.anim
         switch c.state {
         case .walk: p.kind = .side; p.walk = 1
-        case .stand: p.kind = .side
+        case .stand:
+            p.kind = .side
+            if c.nuzzle { p.nuzzle = CGFloat(sin(min(1, c.t / c.dur) * .pi)); if p.nuzzle > 0.5 { p.eyes = .closed } }
         case .sit:
             p.kind = .sit; p.snow = c.headSnow
             if c.sub == .swat { p.pawLift = CGFloat(sin(min(1, c.subT / 0.9) * .pi)); p.eyes = .wide }
             if c.sub == .sneeze { p.headDip = CGFloat(sin(min(1, c.subT / 0.7) * .pi)); p.eyes = .closed }
+            if c.sub == .yawn {
+                // сначала смотрит на курсор, потом зевает: рот открывается, держится и закрывается
+                let v = (c.subT - c.stare) / Self.yawnLen
+                func ease(_ x: Double) -> CGFloat { let x = max(0, min(1, x)); return CGFloat(x * x * (3 - 2 * x)) }
+                if v > 0 { p.yawn = v < 0.3 ? ease(v / 0.3) : (v < 0.7 ? 1 : ease((1 - v) / 0.3)) }
+                p.gaze = max(-1, min(1, (mouse.x - c.x) / 300)) * c.facing * (1 - p.yawn)
+            }
         case .sitBack: p.kind = .sitBack; p.headTurn = c.headTurn; p.snow = c.headSnow
         case .sleep: p.kind = .curl; p.snow = c.snowCover
         case .seal: p.kind = .seal; p.grab = c.grabT > 0 ? 1 : 0; p.eyes = c.grabT > 0 ? .happy : .wide
@@ -1020,7 +1137,7 @@ final class OverlayScene: SKScene {
         case .scratch: p.kind = .side; p.stretch = 0.8; p.scratch = 1; p.eyes = .closed
         case .scratchWall: p.kind = .wall; p.eyes = c.look.squint ? .normal : .wide
         }
-        if p.eyes == .normal && c.anim.truncatingRemainder(dividingBy: 4.3) < 0.16 { p.eyes = .closed }
+        if p.eyes == .normal && c.sub != .yawn && c.anim.truncatingRemainder(dividingBy: 4.3) < 0.16 { p.eyes = .closed }
         if p.eyes == .normal, balls.contains(where: { $0.mode == .flying && abs($0.x - c.x) < 600 }) { p.eyes = .wide }
         if p.kind != .curl, c.grabT <= 0 {
             if c.hoverT > 0.9 { p.eyes = .happy } else if c.hoverT > 0.25 { p.eyes = .wide }
@@ -1034,7 +1151,7 @@ final class OverlayScene: SKScene {
     // MARK: осуждающий взгляд
 
     func showJudge() {
-        guard judge == nil, let look = (cats.first { $0.look.name == CatLook.tom.name } ?? cats.first)?.look else { return }
+        guard judge == nil, let look = (cats.first { $0.look.id == "tom" } ?? cats.first)?.look else { return }
         judgeLook = look
         let n = SKSpriteNode()
         n.size = CGSize(width: Art.canvas.width * 3, height: Art.canvas.height * 3)
@@ -1073,6 +1190,7 @@ final class OverlayScene: SKScene {
 
     func demo(_ name: String) {
         if name == "judge" { showJudge(); return }
+        if let k = Meet.Kind(rawValue: name) { if meet != nil { endMeet() }; startMeet(k); return }
         if name == "snowman" {
             guard let c = cats.first, let sf = surface(c.surf) else { return }
             let x = c.x + 90 <= W - 40 ? c.x + 90 : c.x - 90
@@ -1095,6 +1213,7 @@ final class OverlayScene: SKScene {
             case "hunt": startHunt(c)
             case "sleep": c.napIdle = false; begin(c, .sleep, 25)
             case "sneeze": begin(c, .sit, 4); startSub(c, .sneeze)
+            case "yawn": begin(c, .sit, 7); startSub(c, .yawn); c.stare = 2.5
             case "swat": begin(c, .sit, 4); startSub(c, .swat)
             case "shake": c.targetRel = c.rel; begin(c, .shake, 1.5)
             case "scratch": begin(c, .scratch, 6)

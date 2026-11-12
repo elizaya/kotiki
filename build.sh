@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 # The release tag must be v$VERSION: the app compares its own version with the latest release tag.
-VERSION=1.1
+VERSION=1.2
 APP="build/Kotiki.app"
 rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/tmp
 for arch in arm64 x86_64; do

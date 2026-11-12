@@ -2,7 +2,7 @@
 
 A cat that lives on your Mac screen. It walks along window edges and the Dock, plays, naps and reacts to your cursor while snow falls around it.
 
-Two cats are built in: Tom (grey, sturdy, permanently judging you) and Pirozhok (black, small, round, saucer eyes).
+Two cats are built in: Tom (grey, sturdy, permanently judging you) and Pirozhok (black, small, round, saucer eyes). You can also make up to four cats of your own.
 
 ![Kotiki: two cats and a snowman on the screen](docs/preview.png)
 
@@ -50,7 +50,19 @@ Everything is controlled from the cat-head icon in the menu bar. The menu is in 
 - Leave the Mac idle for five minutes and the cats curl up and get snowed on.
 - Now and then a cat sharpens its claws: on the floor, or standing up against a wall (the edge of the screen or the side of a window it is sitting in).
 - The cats sit on the Dock. If the Dock hides automatically, they hop onto it when it slides out and drop back down when it goes away.
-- With both cats on, they keep to their own side and do not walk through each other.
+- A sitting cat sometimes stares at your cursor for a few seconds and then yawns. Cats also yawn before a nap and after waking up, and a yawn is contagious: a cat sitting nearby yawns too.
+- With two or three cats on, they mostly keep to their own side and do not walk through each other, but now and then one walks over to another: they touch noses, sit side by side watching the snow, nap next to each other or play tag across the windows. A sociable cat starts this more often; an unsociable one may turn its back on the visitor.
+
+**Your own cat**
+
+Open Коты → Создать своего кота… in the menu (Добавить ещё кота… for the next one, up to four). Each cat gets its own line in the menu to switch it on and off, and a Настроить: … line to edit it. The window shows a live preview, and the cat on the screen changes as you move the controls.
+
+- Fur colour (presets or any colour), pattern (plain, white chest and socks, tabby) and fluffiness (three levels)
+- Eye colour, pupil shape, open or squinting look
+- Build: size, chubbiness, length of legs, tail and ears
+- Character: lazy to active, loner to sociable
+- Tricks: tick the scenes this cat knows (belly-up, lounging, loaf, watching the snow, scratching, hunting the cursor, yawning, snowballs, breaking snowmen)
+- Случайный кот rolls a random cat; Выпустить на экран shows or hides it; Удалить кота… removes it for good
 
 **Snow**
 
@@ -71,7 +83,7 @@ While ⌥ is held, clicks do not reach the windows underneath.
 **Menu**
 
 - Pause, Hide for an hour
-- Cats: Tom, Pirozhok or both
+- Cats: Tom, Pirozhok and your own cats, in any combination; add and set up your own cats
 - Style: illustration or pixel art
 - Snow: off, light, normal, blizzard; clear the drifts
 - Wind: direction and strength
@@ -113,8 +125,8 @@ defaults delete local.kotiki.tom-i-pirozhok
 
 ## Roadmap
 
-- Cats interacting with each other (for now they only keep apart): greeting, grooming, chasing, sleeping side by side
+- More scenes for two cats: grooming, a paw to the face
 - Windows version
-- Set up your own cat
+- More patterns for your own cat: siamese points, calico
 - Season selection
 - Useful nudges: take a break after working too long, go to sleep at night

@@ -67,6 +67,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let env = ProcessInfo.processInfo.environment
         if env["KOTIKI_SNAPSHOT"] == nil { Updater.shared.start() }
         if env["KOTIKI_DOCK"] != nil { scene.forceDock = true }
+        // отладка: KOTIKI_EDITOR=/path.png открывает окно «Мой кот» и сохраняет его снимок
+        if let path = env["KOTIKI_EDITOR"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.editCat(Prefs.specs.first?.id) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                guard let v = CatEditor.shared.window?.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return }
+                v.wantsLayer = true; v.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor; v.display()
+                v.cacheDisplay(in: v.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                if env["KOTIKI_SNAPSHOT"] == nil { NSApp.terminate(nil) }
+            }
+        }
         if let d = env["KOTIKI_DEMO"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { self.scene.demo(d) }
         }
@@ -94,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 print(self.scene.surfaces.map { "\($0.id) y=\(Int($0.y)) \($0.segs.map { "\(Int($0.lowerBound))-\(Int($0.upperBound))" })" }.joined(separator: "\n"))
                 for (id, p) in self.scene.piles { print("pile", id, "max", p.h.max() ?? 0, "avg", p.h.reduce(0, +) / Float(max(1, p.h.count)), "flakes", self.scene.flakes.count, "snow", Prefs.snow, "style", Prefs.style) }
                 print("overlapT", self.scene.overlapT, "wallTrips", self.scene.scratches, "dockUp", self.scene.dockUp)
+                print("meets", self.scene.meets, "meet", self.scene.meet.map { "\($0.kind) phase \($0.phase)" } ?? "-", "yawns", self.scene.yawns)
                 print("selfPlays", self.scene.selfPlays, "bats", self.scene.bats, "knocks", self.scene.knocks, "snowmen", self.scene.snowmen.map { $0.radii.count })
                 print("clock", self.scene.clock, "visible", self.panel.isVisible, "occl", self.panel.occlusionState.contains(.visible), "paused", self.view.isPaused, self.scene.isPaused, "frame", self.panel.frame)
                 print(self.scene.cats.map { "\($0.look.name) \($0.state) x=\(Int($0.x)) y=\(Int($0.y)) surf=\($0.surf)" })
@@ -122,6 +134,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let hidden = paused || hiddenUntil != nil
         view.isPaused = hidden
         if hidden { panel.ignoresMouseEvents = true; panel.orderOut(nil) } else { panel.orderFrontRegardless() }
+    }
+
+    /// id — какого кота настраивать; nil — завести нового
+    func editCat(_ id: String?) {
+        CatEditor.shared.onChange = { [weak self] in self?.scene.applyCats() }
+        CatEditor.shared.show(id)
     }
 
     func showHelp() {
@@ -184,9 +202,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item("Спрятать на час") { self.hiddenUntil = Date().addingTimeInterval(3600); self.refreshVisibility() })
         }
         menu.addItem(.separator())
-        menu.addItem(sub("Коты", [
+        var catItems = [
             item("Том", on: Prefs.tom) { Prefs.tom.toggle() },
-            item("Пирожок", on: Prefs.pirozhok) { Prefs.pirozhok.toggle() }]))
+            item("Пирожок", on: Prefs.pirozhok) { Prefs.pirozhok.toggle() }]
+        let own = Prefs.specs
+        for s in own {
+            catItems.append(item(s.look.name, on: s.on) {
+                var all = Prefs.specs
+                if let i = all.firstIndex(where: { $0.id == s.id }) { all[i].on.toggle(); Prefs.specs = all }
+            })
+        }
+        catItems.append(.separator())
+        for s in own { catItems.append(item("Настроить: \(s.look.name)…") { self.editCat(s.id) }) }
+        if own.count < Prefs.maxSpecs {
+            catItems.append(item(own.isEmpty ? "Создать своего кота…" : "Добавить ещё кота…") { self.editCat(nil) })
+        }
+        menu.addItem(sub("Коты", catItems))
         menu.addItem(sub("Стиль", [
             item("Иллюстрация", on: Prefs.style == 1) { Prefs.style = 1 },
             item("Пиксель-арт", on: Prefs.style == 0) { Prefs.style = 0 }]))
@@ -209,9 +240,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Осуждающий взгляд по ночам", on: Prefs.judge) { Prefs.judge.toggle() })
         menu.addItem(.separator())
         let demos = [("seal", "Тюлень"), ("window", "Смотрит на снег"), ("lounge", "Барин"), ("loaf", "«Это моё окно»"),
-                     ("hunt", "Охота на курсор"), ("sleep", "Сон"), ("sneeze", "Чих"), ("swat", "Ловит снежинку"),
+                     ("hunt", "Охота на курсор"), ("sleep", "Сон"), ("yawn", "Зевает"), ("sneeze", "Чих"), ("swat", "Ловит снежинку"),
                      ("shake", "Трясёт лапой"), ("scratch", "Точит когти об пол"), ("wall", "Точит когти об стену"), ("snowman", "Снеговик (для проверки)"), ("judge", "Осуждающий взгляд")]
-        menu.addItem(sub("Показать сценку", demos.map { k, n in item(n) { self.scene.demo(k) } }))
+        var demoItems = demos.map { k, n in item(n) { self.scene.demo(k) } }
+        if scene.cats.count > 1 {
+            // сценки на двоих
+            demoItems.append(.separator())
+            let pairs = [("greet", "Здороваются"), ("together", "Сидят рядом"), ("nap", "Спят вместе"), ("chase", "Догонялки")]
+            demoItems += pairs.map { k, n in item(n) { self.scene.demo(k) } }
+        }
+        menu.addItem(sub("Показать сценку", demoItems))
         menu.addItem(.separator())
         let up = Updater.shared
         if let s = up.staged {
@@ -230,7 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 let args = CommandLine.arguments
 if args.count > 2, args[1] == "--sheet" {
-    Art.sheet(args[2])
+    Art.sheet(args[2], custom: args.count > 3)
 } else if args.count > 2, args[1] == "--icon" {
     var p = Pose(); p.kind = .face
     Art.writePNG(Art.render(.tom, .illustration, p), args[2])
