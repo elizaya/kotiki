@@ -28,6 +28,16 @@ struct Pose {
     var gaze: CGFloat = 0
     /// 0…1 — тянется носом вперёд (обнюхивается)
     var nuzzle: CGFloat = 0
+    /// 0…1 — вылизывает: язык наружу, голова ходит вперёд-назад
+    var lick: CGFloat = 0
+    /// на сколько стоящий кот поднимает голову (чтобы дотянуться до чужой)
+    var lift: CGFloat = 0
+    /// 0…1 — сидящий кот бьёт лапой вперёд
+    var bap: CGFloat = 0
+    /// куда летит лапа (в координатах самого кота)
+    var bapTo = CGPoint(x: 36, y: 34)
+    /// хвост сидящего кота лежит с другой стороны (чтобы не оказаться под гостем)
+    var tailFlip = false
 }
 
 private func comps(_ hex: UInt32) -> (CGFloat, CGFloat, CGFloat) {
@@ -47,17 +57,20 @@ func rgb(_ hex: UInt32, _ a: CGFloat = 1) -> CGColor {
 
 struct CatLook {
     let name: String
-    let fur, furLight, furDark, earIn, eye, line, nose, whisker, pixelOutline: CGColor
+    var fur, furLight, furDark, earIn, eye, line, nose, whisker, pixelOutline: CGColor
     let size, chub, headRX, headRY, earH, leg, tailLen, tailW, bodyLen, eyeRX, eyeRY: CGFloat
     let squint, roundPupil: Bool
     let speed: CGFloat
     var id = "custom"
-    /// 0 — однотонный, 1 — белая грудка и носочки, 2 — полосатый
+    /// 0 — однотонный, 1 — белая грудка и носочки, 2 — полосатый, 3 — сиамский, 4 — трёхцветный
     var pattern = 0
     /// 0 — гладкий, 1 — пушистый, 2 — очень пушистый
     var fluff = 0
     var white = rgb(0xf6f2ea)
+    /// второй цвет: полоски у полосатого, отметины у сиамского, первые пятна у трёхцветного
     var stripe = rgb(0x000000)
+    /// вторые пятна у трёхцветного
+    var patch2 = rgb(0x2b2622)
     /// какие сценки кот умеет; nil — все
     var tricks: Set<String>? = nil
     /// 0 — ленивый, 1 — активный
@@ -142,7 +155,7 @@ struct CatSpec: Equatable {
     static func random() -> CatSpec {
         var s = CatSpec()
         s.fur = furs.randomElement()!.1; s.eye = eyes.randomElement()!.1
-        s.pattern = Int.random(in: 0...2); s.fluff = Int.random(in: 0...2)
+        s.pattern = Int.random(in: 0...4); s.fluff = Int.random(in: 0...2)
         s.roundPupil = Bool.random(); s.squint = Int.random(in: 0...3) == 0
         s.size = Double.random(in: 0.75...1.1); s.chub = Double.random(in: 1...1.4)
         s.leg = Double.random(in: 8.5...14); s.tail = Double.random(in: 22...38); s.ears = Double.random(in: 10...17)
@@ -152,6 +165,9 @@ struct CatSpec: Equatable {
 
     /// Оттенки, контур, нос и усы подбираются по цвету шерсти.
     var look: CatLook {
+        // у трёхцветного основа белая, а выбранный цвет уходит в пятна
+        let own = fur
+        let fur: UInt32 = pattern == 4 ? 0xf3eee6 : own
         let (r, g, b) = comps(fur)
         let lum = 0.3 * r + 0.59 * g + 0.11 * b
         let dark = lum < 0.2, pale = lum > 0.62
@@ -168,6 +184,17 @@ struct CatSpec: Equatable {
         l.id = "custom-" + id
         l.pattern = pattern; l.fluff = fluff
         l.stripe = tone(fur, dark ? 0.2 : -0.36)
+        if pattern == 3 {
+            // отметины темнее шерсти (у чёрного кота — светлее), а нос и линии на маске ещё темнее
+            l.stripe = tone(fur, dark ? 0.28 : -0.55)
+            l.line = tone(fur, dark ? 0.6 : -0.84); l.nose = l.line
+        }
+        if pattern == 4 {
+            let (or, og, ob) = comps(own), ol = 0.3 * or + 0.59 * og + 0.11 * ob
+            let orange: UInt32 = 0xd98a3d, black: UInt32 = 0x2b2622
+            if ol > 0.85 { l.stripe = rgb(orange); l.patch2 = rgb(black) }
+            else { l.stripe = rgb(own); l.patch2 = rgb(ol < 0.42 ? orange : black) }
+        }
         l.white = lum > 0.85 ? rgb(0xffffff) : rgb(0xf6f2ea)
         l.tricks = Set(tricks); l.activity = activity; l.social = social
         return l
@@ -188,8 +215,10 @@ final class Painter {
     var fl: CGFloat { CGFloat(look.fluff) }
     var sock: Bool { look.pattern == 1 }
     var tabby: Bool { look.pattern == 2 }
-    /// цвет лапы: у кота «в носочках» лапы белые
-    func pawCol(_ col: CGColor) -> CGColor { sock ? look.white : col }
+    var point: Bool { look.pattern == 3 }
+    var calico: Bool { look.pattern == 4 }
+    /// цвет лапы: у кота «в носочках» лапы белые, у сиамского — тёмные
+    func pawCol(_ col: CGColor) -> CGColor { sock ? look.white : (point ? look.stripe : col) }
 
     /// Хвост: у пушистых толще, у полосатых в кольцах, у кота в носочках с белым кончиком.
     func tail(_ a: CGPoint, _ q: CGPoint, _ b: CGPoint, _ col: CGColor) {
@@ -199,23 +228,41 @@ final class Painter {
             let u = 1 - t
             return P(u * u * a.x + 2 * u * t * q.x + t * t * b.x, u * u * a.y + 2 * u * t * q.y + t * t * b.y)
         }
+        /// кусок хвоста от t0 до t1 другим цветом
+        func part(_ t0: CGFloat, _ t1: CGFloat, _ col: CGColor, cap: CGLineCap = .round) {
+            c.setStrokeColor(col); c.setLineWidth(w); c.setLineCap(cap); c.setLineJoin(.round)
+            c.beginPath(); c.move(to: at(t0))
+            for i in 1...6 { c.addLine(to: at(t0 + (t1 - t0) * CGFloat(i) / 6)) }
+            c.strokePath()
+        }
         if tabby {
-            c.setStrokeColor(look.stripe); c.setLineWidth(w); c.setLineCap(.butt)
-            for t: CGFloat in pixel ? [0.45] : [0.28, 0.5, 0.72] {
-                c.beginPath(); c.move(to: at(t)); c.addLine(to: at(t + 0.09)); c.strokePath()
-            }
-            limb(at(0.93), b, w, look.stripe)
+            // в пикселях кольцо одно, зато широкое, и между ним и тёмным кончиком остаётся заметный просвет:
+            // узкие кольца на хвосте в три пикселя толщиной сливались в одно пятно
+            for t: CGFloat in pixel ? [0.42] : [0.28, 0.5, 0.72] { part(t, t + (pixel ? 0.19 : 0.09), look.stripe, cap: .butt) }
+            limb(at(pixel ? 0.97 : 0.93), b, w, look.stripe)
         }
         if sock { limb(at(0.85), b, w, look.white) }
+        if point { part(0.3, 1, look.stripe) }
+        if calico { part(0.22, 0.6, look.stripe); part(0.6, 1, look.patch2) }
     }
 
     /// Полоски: штрихи от края тела внутрь, обрезанные по его эллипсу. degs — где на контуре они начинаются.
     func stripes(_ cx: CGFloat, _ cy: CGFloat, _ rx: CGFloat, _ ry: CGFloat, _ degs: [CGFloat], depth: CGFloat = 0.5, rot: CGFloat = 0) {
-        guard tabby else { return }
+        guard tabby || calico else { return }
         c.saveGState()
         c.translateBy(x: cx, y: cy)
         if rot != 0 { c.rotate(by: rot) }
         c.addEllipse(in: CGRect(x: -rx, y: -ry, width: 2 * rx, height: 2 * ry)); c.clip()
+        if calico {
+            // пятна там же, где у полосатого полоски: с одного края одного цвета, с другого — второго, между ними белое
+            let n = degs.count, k = max(1, (n - 1) / 2), r = max(5.5, min(rx, ry) * 0.42)
+            for (i, d) in degs.enumerated() where i < k || i >= n - k {
+                let a = d * .pi / 180
+                ell(rx * cos(a) * 0.8, ry * sin(a) * 0.8, r * (i % 2 == 0 ? 1.15 : 0.95), r, i < k ? look.stripe : look.patch2)
+            }
+            c.restoreGState()
+            return
+        }
         let w: CGFloat = pixel ? 3 : 2.3
         for d in degs {
             let a = d * .pi / 180
@@ -228,12 +275,11 @@ final class Painter {
     /// Клочки шерсти по контуру тела (для пушистых).
     func tufts(_ cx: CGFloat, _ cy: CGFloat, _ rx: CGFloat, _ ry: CGFloat, _ degs: [CGFloat], _ col: CGColor, lean: CGFloat = 0.2) {
         guard fl > 0 else { return }
-        let len = 2 + 1.8 * fl
+        // мягкие округлые клочки, а не острые зубцы
+        let r = 3.6 + 1.1 * fl, out = 1.5 + 1.0 * fl
         for d in degs {
-            let a = d * .pi / 180, h: CGFloat = 0.2
-            poly([P(cx + rx * cos(a - h) * 0.93, cy + ry * sin(a - h) * 0.93),
-                  P(cx + (rx + len) * cos(a + lean), cy + (ry + len) * sin(a + lean)),
-                  P(cx + rx * cos(a + h) * 0.93, cy + ry * sin(a + h) * 0.93)], col)
+            let a = d * .pi / 180 + lean * 0.5
+            ell(cx + (rx + out - r) * cos(a), cy + (ry + out - r) * sin(a), r * 1.2, r, col, rot: a + .pi / 2)
         }
     }
 
@@ -311,7 +357,7 @@ final class Painter {
             ell(0, 0, pw, ph, pupil)
             ell(erx * 0.32, ery * 0.36, erx * 0.17, erx * 0.17, rgb(0xffffff, 0.9))
             if L.squint && !wide {
-                poly([P(-erx - 1, lidY - s * 1.2), P(erx + 1, lidY + s * 1.2), P(erx + 1, ery + 2), P(-erx - 1, ery + 2)], L.fur)
+                poly([P(-erx - 1, lidY - s * 1.2), P(erx + 1, lidY + s * 1.2), P(erx + 1, ery + 2), P(-erx - 1, ery + 2)], point ? L.stripe : L.fur)
             }
             c.restoreGState()
             if L.squint && !wide {
@@ -322,7 +368,7 @@ final class Painter {
     }
 
     func head(_ at: CGPoint, eyes: Eyes, shift: CGFloat = 0, back: Bool = false,
-              scale: CGFloat = 1, rot: CGFloat = 0, snow: CGFloat = 0, yawn: CGFloat = 0) {
+              scale: CGFloat = 1, rot: CGFloat = 0, snow: CGFloat = 0, yawn: CGFloat = 0, lick: CGFloat = 0) {
         let L = look, rx = L.headRX, ry = L.headRY
         let eyes = yawn > 0.25 ? Eyes.closed : eyes
         c.saveGState()
@@ -332,7 +378,7 @@ final class Painter {
         for s: CGFloat in [-1, 1] {
             // при зевании уши отходят назад
             let a = P(s * rx * 0.92, ry * 0.3), tip = P(s * rx * (0.8 + 0.14 * yawn), ry * 0.55 + L.earH * (1 - 0.22 * yawn)), b = P(s * rx * 0.1, ry * 0.9)
-            poly([a, tip, b], L.fur)
+            poly([a, tip, b], point ? L.stripe : (calico ? (s < 0 ? L.stripe : L.patch2) : L.fur))
             if !back {
                 let m = P((a.x + tip.x + b.x) / 3, (a.y + tip.y + b.y) / 3)
                 let inner = [a, tip, b].map { P(m.x + ($0.x - m.x) * 0.55, m.y + ($0.y - m.y) * 0.55) }
@@ -341,13 +387,29 @@ final class Painter {
         }
         if fl > 0 {
             // щёки
+            let pr = 1.5 + 1.7 * fl
             for s: CGFloat in [-1, 1] {
-                poly([P(s * rx * 0.8, ry * 0.15), P(s * (rx * 1.08 + 2 + 2.5 * fl), -ry * 0.28), P(s * rx * 0.92, -ry * 0.42),
-                      P(s * (rx + 1.5 + 2 * fl), -ry * 0.74), P(s * rx * 0.5, -ry * 0.82)], L.fur)
+                ell(s * (rx * 1.06 + pr - 6), -ry * 0.14, 6, 4.6 + 0.5 * fl, L.fur, rot: s * 0.35)
+                ell(s * (rx * 0.98 + pr - 6), -ry * 0.58, 6, 4.4 + 0.5 * fl, L.fur, rot: -s * 0.35)
             }
         }
         ell(0, 0, rx, ry, L.fur)
         ell(0, -ry * 0.28, rx * 1.08, ry * 0.7, L.fur)
+        if calico || (point && !back) {
+            c.saveGState()
+            c.addEllipse(in: CGRect(x: -rx, y: -ry, width: 2 * rx, height: 2 * ry))
+            c.addEllipse(in: CGRect(x: -rx * 1.08, y: -ry * 0.98, width: rx * 2.16, height: ry * 1.4))
+            c.clip()
+            if calico {
+                // пятна на лбу, между ними белая проточина
+                ell(-rx * 0.52, ry * 0.86, rx * 0.62, ry * 0.46, L.stripe)
+                ell(rx * 0.64, ry * 0.9, rx * 0.46, ry * 0.42, L.patch2)
+            } else {
+                // тёмная маска на морде
+                ell(shift * 0.8, -ry * 0.2, rx * 0.8, ry * 0.68, L.stripe)
+            }
+            c.restoreGState()
+        }
         if tabby {
             let w: CGFloat = pixel ? 3 : 1.9, sx = back ? 0 : shift * 0.6
             for (dx, len): (CGFloat, CGFloat) in [(-5, 0.24), (0, 0.34), (5, 0.24)] {
@@ -375,12 +437,13 @@ final class Painter {
                 px(P(shift, -ry * 0.4), 2, yawn > 0.7 ? 3 : 2, mouthIn, dy: yawn > 0.7 ? -3 : -2)
                 px(P(shift, -ry * 0.4), 2, 1, tongue, dy: yawn > 0.7 ? -3 : -2)
             }
+            if lick > 0.3 { px(P(shift, -ry * 0.4), 1, 2, tongue, dx: 1, dy: -2) }
             px(P(shift, -ry * 0.4), 2, 1, L.nose)
         } else {
             if yawn > 0.05 {
                 // челюсть опускается, внутри — пасть, язык и клыки
                 let mw = 2.6 + 3.4 * yawn, mh = 1.2 + 4.8 * yawn, my = ny - 4.4 - mh * 0.8
-                ell(shift, my - 1, mw + 2.8, mh + 2.6, sock ? L.white : L.fur)
+                ell(shift, my - 1, mw + 2.8, mh + 2.6, sock ? L.white : (point ? L.stripe : L.fur))
                 ell(shift, my, mw, mh, mouthIn)
                 ell(shift, my - mh * 0.45, mw * 0.7, mh * 0.48, tongue)
                 if yawn > 0.5 {
@@ -394,6 +457,7 @@ final class Painter {
                 curve(P(shift, ny - 3.3), P(shift - 2.5, ny - 7.2), P(shift - 5.6, ny - 5.4), 1.1, L.line)
                 curve(P(shift, ny - 3.3), P(shift + 2.5, ny - 7.2), P(shift + 5.6, ny - 5.4), 1.1, L.line)
             }
+            if lick > 0.05 { ell(shift + 1.6, ny - 7.4, 2.2, 3.0 * lick, tongue) }
             for s: CGFloat in [-1, 1] {
                 limb(P(shift + s * rx * 0.55, ny - 2), P(shift + s * rx * 1.28, ny + 0.5), 0.7, L.whisker)
                 limb(P(shift + s * rx * 0.55, ny - 4), P(shift + s * rx * 1.25, ny - 5.5), 0.7, L.whisker)
@@ -419,6 +483,12 @@ final class Painter {
     }
 
     private func paw(_ at: CGPoint, _ col: CGColor) { ell(at.x + 1, at.y, 4.6 + 0.5 * fl, 3.3 + 0.2 * fl, pawCol(col)) }
+    /// Лапа целиком: у сиамского нижняя половина тёмная.
+    private func fullLeg(_ a: CGPoint, _ b: CGPoint, _ w: CGFloat, _ col: CGColor, paw pc: CGColor? = nil) {
+        limb(a, b, w, col)
+        if point { limb(P((a.x + b.x) / 2, (a.y + b.y) / 2), b, w, look.stripe) }
+        paw(b, pc ?? col)
+    }
     /// толщина лапы
     private var lw: CGFloat { 0.8 * fl }
 
@@ -444,8 +514,8 @@ final class Painter {
             tail(tb, P(-rx - 13, by + 5), P(-rx - 7 + 3 * sin(t * 2.5), by + L.tailLen * 0.72), L.fur)
         }
         let ff = foot(hipF + 3, .pi, front: true), fr = foot(hipR + 3, 0, front: false)
-        limb(P(hipF + 3, hipY), ff, 6.5 + lw, L.furDark); paw(ff, L.furDark)
-        limb(P(hipR + 3, hipY), fr, 6.5 + lw, L.furDark); paw(fr, L.furDark)
+        fullLeg(P(hipF + 3, hipY), ff, 6.5 + lw, L.furDark)
+        fullLeg(P(hipR + 3, hipY), fr, 6.5 + lw, L.furDark)
         let wig = p.crouch > 0.5 ? sin(t * 16) * 1.3 : 0
         ell(-1, by, rx, ry, L.fur, rot: -0.22 * p.stretch)
         ell(-rx * 0.45, by + 1 + wig + p.stretch * 4, rx * 0.6, ry * 0.97, L.fur)
@@ -456,9 +526,13 @@ final class Painter {
         var nf = foot(hipF, 0, front: true)
         if p.pawLift > 0 { nf = P(hipF + 8, 9 + sin(t * 38) * 2.2) }
         let nr = foot(hipR, .pi, front: false)
-        limb(P(hipF, hipY - p.stretch * 5), nf, 7 + lw, L.furLight); paw(nf, L.furLight)
-        limb(P(hipR, hipY), nr, 7 + lw, L.furLight); paw(nr, L.furLight)
-        head(P(rx * 0.72 + 3 + p.nuzzle * 4, by + ry * 0.5 + 2 - p.crouch * 3 - p.stretch * 9 - p.nuzzle * 1.5), eyes: p.eyes, shift: 2.5)
+        fullLeg(P(hipF, hipY - p.stretch * 5), nf, 7 + lw, L.furLight)
+        fullLeg(P(hipR, hipY), nr, 7 + lw, L.furLight)
+        let hx = rx * 0.72 + 3 + p.nuzzle * 4 + p.lick * (2.5 + 1.8 * sin(t * 10))
+        let hy = by + ry * 0.5 + 2 - p.crouch * 3 - p.stretch * 9 - p.nuzzle * 1.5 + p.lift
+        // шея, когда кот тянется вверх
+        if p.lift > 1 { limb(P(rx * 0.5, by + ry * 0.3), P(hx - 4, hy - 5), 15 + lw, L.fur) }
+        head(P(hx, hy), eyes: p.eyes, shift: 2.5, lick: p.lick)
     }
 
     /// Точит когти о стену: стоит на задних лапах боком к нам, стена — в Art.wallReach впереди.
@@ -472,13 +546,13 @@ final class Painter {
         }
         tail(P(-13, 6), P(-24, 1), P(-14 - L.tailLen * 0.7, 5 + 3 * sin(t * 3)), L.fur)
         arm(P(13, hy - 13), 0, 6.5, L.furDark)
-        limb(P(1, 9), P(6, 3.2), 6.5 + lw, L.furDark); paw(P(6, 3.2), L.furDark)
+        fullLeg(P(1, 9), P(6, 3.2), 6.5 + lw, L.furDark)
         ell(-5, 12, 13.5, 12.5, L.fur)
         ell(1, 4 + L.bodyLen * 0.9, 12.5 * L.chub + fl, L.bodyLen * 0.9, L.fur, rot: -0.32)
         stripes(1, 4 + L.bodyLen * 0.9, 12.5 * L.chub + fl, L.bodyLen * 0.9, [135, 160, 185, 210], depth: 0.6, rot: -0.32)
         tufts(1, 4 + L.bodyLen * 0.9, 12.5 * L.chub + fl, L.bodyLen * 0.9, fl > 1 ? [150, 185, 215] : [215], L.fur)
         if sock { ell(8, 6 + L.bodyLen * 0.95, 5, L.bodyLen * 0.5, L.white, rot: -0.32) }
-        limb(P(-9, 9), P(-4, 3.2), 7 + lw, L.furLight); paw(P(-4, 3.2), L.furLight)
+        fullLeg(P(-9, 9), P(-4, 3.2), 7 + lw, L.furLight)
         head(P(-3, hy), eyes: p.eyes, shift: 4, rot: 0.15)
         arm(P(11, hy - 16), .pi, 7, L.furLight)
     }
@@ -490,7 +564,8 @@ final class Painter {
         if back {
             tail(P(6, 5), P(13, -5), P(9 + 5 * wag, -15), L.fur)
         } else {
-            tail(P(12, 5), P(18 + L.tailLen * 0.7, -1), P(15 + L.tailLen * 0.72, 10 + 6 * wag), L.fur)
+            let ts: CGFloat = p.tailFlip ? -1 : 1
+            tail(P(12 * ts, 5), P((18 + L.tailLen * 0.7) * ts, -1), P((15 + L.tailLen * 0.72) * ts, 10 + 6 * wag), L.fur)
         }
         ell(0, bh - 1, bw, bh, L.fur)
         tufts(0, bh - 1, bw, bh, fl > 1 ? [158, 182, 206, 22, -2, -26] : [200, -20], L.fur, lean: 0)
@@ -504,14 +579,15 @@ final class Painter {
             if fl > 0 {
                 // воротник
                 ell(0, 2 * bh - 12, bw * 0.55 + 2 * fl, 6 + 1.5 * fl, chest)
-                for dx: CGFloat in [-7, 0, 7] { poly([P(dx - 4.5, 2 * bh - 15), P(dx + 4.5, 2 * bh - 15), P(dx, 2 * bh - 23 - 2 * fl)], chest) }
+                for dx: CGFloat in [-7, 0, 7] { ell(dx, 2 * bh - 17.5 - fl, 4.8, 5 + fl, chest) }
             }
             ell(-8, 3.6, 6.5, 4, pawCol(L.furLight))
-            if p.pawLift <= 0 {
+            if p.pawLift <= 0 && p.bap <= 0 {
                 ell(8, 3.6, 6.5, 4, pawCol(L.furLight))
             } else {
-                let tip = P(19 + 3 * p.pawLift, 30 + 16 * p.pawLift)
-                limb(P(11, 20), tip, 6.5 + lw, L.furLight); paw(tip, L.furLight)
+                // вверх за снежинкой или вперёд — по чужой морде
+                let tip = p.bap > 0 ? P(15 + (p.bapTo.x - 15) * p.bap, 16 + (p.bapTo.y - 16) * p.bap) : P(19 + 3 * p.pawLift, 30 + 16 * p.pawLift)
+                fullLeg(P(11, 20), tip, 6.5 + lw, L.furLight)
             }
         }
         // зевая, кот запрокидывает голову
@@ -547,15 +623,15 @@ final class Painter {
         ell(-2, ry + 4, rx * 0.68, ry * 0.58, sock ? L.white : L.furLight)
         let top = ry * 1.55, len = L.leg + 4
         let r1 = P(-rx * 0.68 + 2 * w, top + len), r2 = P(-rx * 0.3 - 2 * w, top + len + 2)
-        limb(P(-rx * 0.6, top), r1, 6.5 + lw, L.fur); paw(r1, L.furLight)
-        limb(P(-rx * 0.28, top + 1), r2, 6.5 + lw, L.fur); paw(r2, L.furLight)
+        fullLeg(P(-rx * 0.6, top), r1, 6.5 + lw, L.fur, paw: L.furLight)
+        fullLeg(P(-rx * 0.28, top + 1), r2, 6.5 + lw, L.fur, paw: L.furLight)
         let g = p.grab
         let mid = P(rx * 0.42, top + len + 1)
         var f1 = P(rx * 0.25 - 2 * w, top + len + 1), f2 = P(rx * 0.62 + 2 * w, top + len - 1)
         f1 = P(f1.x + (mid.x - 3 - f1.x) * g, f1.y + (mid.y - f1.y) * g)
         f2 = P(f2.x + (mid.x + 3 - f2.x) * g, f2.y + (mid.y - f2.y) * g)
-        limb(P(rx * 0.28, top + 1), f1, 6.5 + lw, L.fur); paw(f1, L.furLight)
-        limb(P(rx * 0.58, top), f2, 6.5 + lw, L.fur); paw(f2, L.furLight)
+        fullLeg(P(rx * 0.28, top + 1), f1, 6.5 + lw, L.fur, paw: L.furLight)
+        fullLeg(P(rx * 0.58, top), f2, 6.5 + lw, L.fur, paw: L.furLight)
         head(P(rx * 0.85 + 4, 17), eyes: p.eyes, rot: -1.95)
     }
 
@@ -569,7 +645,7 @@ final class Painter {
         stripes(-3, 11, rx + 3, 11 * L.chub + fl, [62, 84, 106, 128, 150])
         if sock { ell(rx * 0.5, 9, 8, 7, L.white) }
         let tip = P(rx * 0.5 + 2 * sin(t * 1.2), -11)
-        limb(P(rx * 0.45, 6), tip, 6.5 + lw, L.furLight); paw(tip, L.furLight)
+        fullLeg(P(rx * 0.45, 6), tip, 6.5 + lw, L.furLight)
         ell(rx * 0.95, 3.6, 7, 3.6, pawCol(L.furLight))
         head(P(rx * 0.7, 21), eyes: p.eyes)
     }
@@ -672,6 +748,8 @@ enum Art {
         add("yawn½") { $0.kind = .sit; $0.yawn = 0.5 }
         add("yawn") { $0.kind = .sit; $0.yawn = 1 }
         add("nuzzle") { $0.kind = .side; $0.nuzzle = 1; $0.eyes = .closed }
+        add("lick") { $0.kind = .side; $0.lick = 1; $0.lift = 8; $0.eyes = .closed }
+        add("bap") { $0.kind = .sit; $0.bap = 1; $0.gaze = 1 }
         let cols = 8, cw = 252, ch = 198
         var combos: [(CatLook, ArtStyle)] = [(.tom, .illustration), (.tom, .pixel), (.pirozhok, .illustration), (.pirozhok, .pixel)]
         if custom {
@@ -679,7 +757,11 @@ enum Art {
             var b = CatSpec(); b.fur = 0x7d8490; b.pattern = 1; b.fluff = 2; b.eye = 0xe3a53a; b.size = 1.05
             var d = CatSpec(); d.fur = 0x1e1e22; d.pattern = 2; d.fluff = 0; d.squint = true; d.roundPupil = false
             var e = CatSpec(); e.fur = 0xf2efe8; e.pattern = 0; e.fluff = 2; e.eye = 0x6bb7e6; e.chub = 1.4; e.size = 0.8
-            combos = [(a.look, .illustration), (a.look, .pixel), (b.look, .illustration), (b.look, .pixel), (d.look, .illustration), (e.look, .illustration)]
+            var f = CatSpec(); f.fur = 0xe6cfa4; f.pattern = 3; f.fluff = 0; f.eye = 0x6bb7e6
+            var g = CatSpec(); g.pattern = 4; g.fluff = 1
+            var h = CatSpec(); h.fur = 0x1e1e22; h.pattern = 4; h.fluff = 2; h.eye = 0xd9d24e
+            combos = [(a.look, .illustration), (a.look, .pixel), (b.look, .illustration), (b.look, .pixel), (d.look, .illustration), (e.look, .illustration),
+                      (f.look, .illustration), (f.look, .pixel), (g.look, .illustration), (g.look, .pixel), (h.look, .illustration), (d.look, .pixel)]
         }
         let rowsPer = (poses.count + cols - 1) / cols
         let W = cols * cw, H = combos.count * rowsPer * ch

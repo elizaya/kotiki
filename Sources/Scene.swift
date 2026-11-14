@@ -163,7 +163,7 @@ struct Flake {
 // MARK: кот
 
 enum CatState { case stand, walk, sit, sitBack, sleep, seal, lounge, loaf, crouch, jump, fall, shake, stretch, drag, scratch, scratchWall }
-enum SubAct { case none, swat, sneeze, yawn }
+enum SubAct { case none, swat, sneeze, yawn, bap }
 
 final class Cat {
     var look: CatLook
@@ -223,6 +223,14 @@ final class Cat {
     var run = false
     /// тянется носом к другому коту
     var nuzzle = false
+    /// вылизывает другого кота
+    var lick = false
+    /// сидит хвостом в другую сторону
+    var tailFlip = false
+    /// куда бьёт лапой (в своих координатах)
+    var bapTo = CGPoint(x: 36, y: 34)
+    /// свой слой кота (на время сценки кот может выйти на передний план)
+    var z: CGFloat = 10
     /// встреча с другим котом, в которой он сейчас участвует
     var meet: Meet?
 
@@ -338,7 +346,8 @@ final class OverlayScene: SKScene {
         for c in cats {
             c.texT = 0
             let i = own.firstIndex { $0.id == c.look.id } ?? 0
-            c.node.zPosition = ["tom": 10, "pirozhok": 10.5][c.look.id] ?? 10.1 + 0.05 * CGFloat(i)
+            c.z = ["tom": 10, "pirozhok": 10.5][c.look.id] ?? 10.1 + 0.05 * CGFloat(i)
+            c.node.zPosition = c === meet?.front ? c.z + 1 : c.z
         }
     }
 
@@ -699,7 +708,8 @@ final class OverlayScene: SKScene {
         if s != .jump { c.catching = false }
         if s != .walk && s != .sit { c.goal = .none }
         if s != .fall && s != .jump { c.resume = nil }
-        c.sitThen = nil; c.woke = false; c.run = false; c.nuzzle = false; c.yawnIn = 0
+        c.sitThen = nil; c.woke = false; c.run = false; c.nuzzle = false; c.lick = false; c.yawnIn = 0
+        if s != .sit { c.tailFlip = false }
         c.texT = 0
     }
 
@@ -899,7 +909,7 @@ final class OverlayScene: SKScene {
                         }
                     }
                 }
-                let len = c.sub == .swat ? 0.9 : (c.sub == .yawn ? c.stare + Self.yawnLen : 0.7)
+                let len = c.sub == .swat ? 0.9 : (c.sub == .yawn ? c.stare + Self.yawnLen : (c.sub == .bap ? Self.bapLen : 0.7))
                 if c.subT > len { c.sub = .none; c.subCD = Double.random(in: 4...9); c.yawnEcho = false }
             }
         case .sitBack:
@@ -986,6 +996,8 @@ final class OverlayScene: SKScene {
 
     /// сколько длится сам зевок
     static let yawnLen = 1.9
+    /// сколько длится удар лапой
+    static let bapLen = 0.5
 
     func startSub(_ c: Cat, _ s: SubAct) {
         c.sub = s; c.subT = 0; c.subDone = false
@@ -1137,8 +1149,14 @@ final class OverlayScene: SKScene {
         case .stand:
             p.kind = .side
             if c.nuzzle { p.nuzzle = CGFloat(sin(min(1, c.t / c.dur) * .pi)); if p.nuzzle > 0.5 { p.eyes = .closed } }
+            if c.lick, let m = c.meet {
+                // тянется к голове сидящего и лижет; в начале и в конце голова плавно поднимается и опускается
+                let e = CGFloat(max(0, min(1, min(c.t, c.dur - c.t) / 0.4)))
+                p.lick = e; p.lift = lickLift(c, c === m.a ? m.b : m.a) * e
+                if e > 0.5 { p.eyes = .closed }
+            }
         case .sit:
-            p.kind = .sit; p.snow = c.headSnow
+            p.kind = .sit; p.snow = c.headSnow; p.tailFlip = c.tailFlip
             if c.sub == .swat { p.pawLift = CGFloat(sin(min(1, c.subT / 0.9) * .pi)); p.eyes = .wide }
             if c.sub == .sneeze { p.headDip = CGFloat(sin(min(1, c.subT / 0.7) * .pi)); p.eyes = .closed }
             if c.sub == .yawn {
@@ -1147,6 +1165,12 @@ final class OverlayScene: SKScene {
                 func ease(_ x: Double) -> CGFloat { let x = max(0, min(1, x)); return CGFloat(x * x * (3 - 2 * x)) }
                 if v > 0 { p.yawn = v < 0.3 ? ease(v / 0.3) : (v < 0.7 ? 1 : ease((1 - v) / 0.3)) }
                 p.gaze = max(-1, min(1, (mouse.x - c.x) / 300)) * c.facing * (1 - p.yawn)
+            }
+            if c.sub == .bap { p.bap = CGFloat(sin(min(1, c.subT / Self.bapLen) * .pi)); p.gaze = 1; p.bapTo = c.bapTo }
+            else if let m = c.meet, c === m.b, m.phase == 1, m.kind == .groom || m.kind == .bap {
+                // смотрит на гостя; когда лижут — жмурится и подставляет голову
+                p.gaze = 0.7
+                if m.a.lick, m.a.t > 0.4 { p.eyes = .closed; p.headDip = 0.2 + 0.12 * CGFloat(sin(c.anim * 10)) }
             }
         case .sitBack: p.kind = .sitBack; p.headTurn = c.headTurn; p.snow = c.headSnow
         case .sleep: p.kind = .curl; p.snow = c.snowCover

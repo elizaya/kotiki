@@ -2,12 +2,13 @@ import AppKit
 import SpriteKit
 
 // Встречи котов. Обычно каждый сам по себе, но иногда один подходит к другому:
-// обнюхаться, посидеть рядом, поспать бок о бок или побегать в догонялки.
+// обнюхаться, посидеть рядом, поспать бок о бок, побегать в догонялки,
+// вылизать второго — или получить от него лапой по морде.
 // Встреча ведёт двух котов через обычные состояния (идёт, сидит, прыгает),
 // а когда очередное состояние заканчивается, next() зовёт meetNext().
 
 final class Meet {
-    enum Kind: String { case greet, together, nap, chase }
+    enum Kind: String { case greet, together, nap, chase, groom, bap }
     let kind: Kind
     /// a подходит, b ждёт
     let a: Cat, b: Cat
@@ -24,6 +25,10 @@ final class Meet {
     /// запущена из меню: без отказов
     var forced = false
     var hearted = false
+    /// лапой по морде: b уже замахнулся
+    var swung = false
+    /// кто на время сценки рисуется поверх остальных котов
+    weak var front: Cat?
     // догонялки
     var chaser: Cat, runner: Cat
     var legs = 0
@@ -48,9 +53,23 @@ extension OverlayScene {
             }
             let resting = (m.kind == .nap || m.kind == .together) && m.phase == 1
             if broken || (!resting && m.t > 40) { endMeet(); return }
-            if m.kind == .greet, m.phase == 1, !m.hearted, m.pt > 0.9 {
+            if m.kind == .greet || m.kind == .groom, m.phase == 1, !m.hearted, m.pt > (m.kind == .groom ? 2.4 : 0.9) {
                 m.hearted = true
                 heart(at: CGPoint(x: (m.a.x + m.b.x) / 2, y: max(m.a.y, m.b.y) + 58 * max(m.a.look.size, m.b.look.size)))
+            }
+            if m.kind == .bap, m.phase == 1 {
+                // гость лезет носом — хозяин замахивается и отвешивает лапой
+                if !m.swung, m.pt > 0.7 {
+                    guard m.b.state == .sit else { endMeet(); return }
+                    m.swung = true
+                    startSub(m.b, .bap)
+                    // целится в нос гостя
+                    let a = m.a, b = m.b, A = a.look, sb = b.look.size
+                    let ry = 13.5 * A.chub + 1.2 * CGFloat(A.fluff)
+                    let nx = (abs(a.x - b.x) - (A.bodyLen * 0.72 + 3 + 4 + 2.5) * A.size) / sb
+                    let ny = (A.leg + ry - 3 + ry * 0.5) * A.size / sb
+                    b.bapTo = CGPoint(x: max(24, min(46, nx)), y: max(20, min(44, ny)))
+                } else if m.swung, m.pt > 0.7 + Self.bapLen * 0.45 { bapHit(m) }
             }
             return
         }
@@ -65,7 +84,8 @@ extension OverlayScene {
         guard let m = meet else { return }
         meet = nil
         for c in [m.a, m.b] {
-            c.meet = nil; c.run = false; c.nuzzle = false
+            c.meet = nil; c.run = false; c.nuzzle = false; c.lick = false
+            c.node.zPosition = c.z
             // кто ждал другого — больше не ждёт
             if c.dur - c.t > 50, c.state != .sleep { c.dur = c.t + Double.random(in: 1...2.5) }
         }
@@ -95,9 +115,13 @@ extension OverlayScene {
         else if b.state == .sleep { kind = .nap }
         else {
             let act = a.look.activity
-            let opts: [(Meet.Kind, Double)] = [(.greet, 3), (.together, snowing ? 3 : 2), (.nap, 1.2 * (1.5 - act)), (.chase, 2.4 * (0.4 + act))]
+            let opts: [(Meet.Kind, Double)] = [(.greet, 3), (.together, snowing ? 3 : 2), (.nap, 1.2 * (1.5 - act)), (.chase, 2.4 * (0.4 + act)),
+                                               (.groom, 1.8 * (0.4 + a.look.social)), (.bap, 0.6)]
             var k = Double.random(in: 0..<opts.reduce(0) { $0 + $1.1 })
-            kind = opts.first(where: { k -= $0.1; return k < 0 })?.0 ?? .greet
+            var pick = opts.first(where: { k -= $0.1; return k < 0 })?.0 ?? .greet
+            // необщительный кот вылизывать себя не даёт: гость получит лапой
+            if pick == .groom, Double.random(in: 0...1) < (1 - b.look.social) * 0.5 { pick = .bap }
+            kind = pick
         }
         let m = Meet(kind, a, b)
         m.forced = force != nil
@@ -108,6 +132,9 @@ extension OverlayScene {
         case .together: m.dist = 27 * sizes; m.tight = m.dist - 5
         case .nap: m.dist = 26 * sizes; m.tight = m.dist - 5
         case .chase: m.dist = place(a, by: b, 170) != nil ? 170 : gap(a, b) + 20
+        // морда гостя — у самой головы сидящего: вплотную, чтобы достать языком, или на расстоянии лапы
+        case .groom: m.dist = reach(a) + (b.look.headRX - 7) * b.look.size; m.tight = m.dist - 5
+        case .bap: m.dist = reach(a) + 4 * a.look.size + (20 * b.look.chub + 2 * CGFloat(b.look.fluff)) * b.look.size - 3; m.tight = m.dist - 5
         }
         guard place(a, by: b, m.dist) != nil else { return false }
         meet = m; a.meet = m; b.meet = m
@@ -120,9 +147,11 @@ extension OverlayScene {
     /// Кот ждёт, пока к нему подойдут. Лежащий и сидящий спиной остаются как были.
     func hold(_ c: Cat, _ m: Meet) {
         let o = c === m.a ? m.b : m.a
-        if [.sitBack, .lounge, .loaf].contains(c.state), m.kind != .greet, m.kind != .chase { c.dur = c.t + 99; return }
+        if [.sitBack, .lounge, .loaf].contains(c.state), m.kind == .together || m.kind == .nap { c.dur = c.t + 99; return }
         c.facing = o.x >= c.x ? 1 : -1
         begin(c, .sit, 99)
+        // гость подойдёт вплотную — хвост убираем на другую сторону
+        c.tailFlip = m.kind == .groom || m.kind == .bap
     }
 
     /// Где коту c встать рядом с o на расстоянии d: с той стороны, где он уже стоит, если там есть место.
@@ -223,8 +252,10 @@ extension OverlayScene {
             }
         default:
             // сценка доиграна
-            if m.kind == .greet {
+            if m.kind == .greet || m.kind == .groom {
                 for k in [m.a, m.b] { begin(k, .sit, Double.random(in: 2...4)); k.happy = 1.6 }
+                // после вылизывания ещё немного сидят вплотную, и только потом один отходит
+                if m.kind == .groom { m.a.avoidT = 3.5; m.b.avoidT = 3.5 }
                 endMeet()
             } else { quit() }
         }
@@ -259,7 +290,58 @@ extension OverlayScene {
             }
         case .chase:
             begin(a, .crouch, 1.0)
+        case .groom:
+            // пока лижут, хозяин сидит смирно; гость рисуется поверх, чтобы было видно морду и язык
+            b.sub = .none; b.subCD = 30
+            m.front = a; a.node.zPosition = a.z + 1
+            begin(a, .stand, Double.random(in: 4.5...7)); a.lick = true
+        case .bap:
+            b.sub = .none; b.subCD = 30
+            m.front = b; b.node.zPosition = b.z + 1
+            begin(a, .stand, 2.2); a.nuzzle = true
         }
+    }
+
+    /// На сколько стоящему коту надо поднять голову, чтобы достать носом до головы сидящего.
+    func lickLift(_ c: Cat, _ o: Cat) -> CGFloat {
+        let L = c.look, O = o.look
+        let ry = 13.5 * L.chub + 1.2 * CGFloat(L.fluff)
+        let nose = (L.leg + ry - 3 + ry * 0.5 + 2 - L.headRY * 0.3) * L.size
+        let target = (30 + O.headRY * 1.2) * O.size
+        return max(0, min(13, (target - nose) / L.size))
+    }
+
+    /// Лапа долетела: гость отскакивает назад, хозяин остаётся сидеть как ни в чём не бывало.
+    func bapHit(_ m: Meet) {
+        let a = m.a, b = m.b
+        let dir: CGFloat = a.x >= b.x ? 1 : -1
+        let face = CGPoint(x: a.x - dir * (reach(a) - a.look.headRX * a.look.size), y: a.y + 36 * a.look.size)
+        endMeet()
+        b.node.zPosition = b.z + 1
+        b.node.run(.sequence([.wait(forDuration: 0.5), .run { [weak b] in if let b { b.node.zPosition = b.z } }]))
+        smack(at: face)
+        if Double.random(in: 0...1) < 0.5 { b.sitThen = (.sitBack, Double.random(in: 4...7)) }
+        guard let s = surface(a.surf), let seg = s.seg(at: a.x, tol: 6) else { begin(a, .sit, 2.5); return }
+        let tx = min(max(a.x + dir * 40, seg.lowerBound + 14), max(seg.lowerBound + 14, seg.upperBound - 14))
+        jump(a, to: s, x: tx, after: (.sit, Double.random(in: 2.5...4)), height: 20)
+        a.jDur = 0.32
+        // отскакивает задом, не отворачиваясь
+        a.facing = -dir
+    }
+
+    /// Искры от шлепка.
+    func smack(at p: CGPoint) {
+        let path = CGMutablePath()
+        for i in 0..<5 {
+            let a = CGFloat(i) * 2 * .pi / 5 + 0.3
+            path.move(to: CGPoint(x: cos(a) * 5, y: sin(a) * 5)); path.addLine(to: CGPoint(x: cos(a) * 10, y: sin(a) * 10))
+        }
+        let n = SKShapeNode(path: path)
+        n.strokeColor = NSColor(calibratedRed: 1, green: 0.93, blue: 0.6, alpha: 1)
+        n.lineWidth = pixel ? 3 : 2; n.lineCap = .round; n.isAntialiased = !pixel
+        n.position = p; n.zPosition = 22
+        addChild(n)
+        n.run(.sequence([.group([.scale(to: 1.6, duration: 0.3), .sequence([.wait(forDuration: 0.12), .fadeOut(withDuration: 0.18)])]), .removeFromParent()]))
     }
 
     /// Убегает от другого кота: по своей поверхности, а если бежать некуда — прыжком на другую.

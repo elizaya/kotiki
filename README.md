@@ -51,13 +51,13 @@ Everything is controlled from the cat-head icon in the menu bar. The menu is in 
 - Now and then a cat sharpens its claws: on the floor, or standing up against a wall (the edge of the screen or the side of a window it is sitting in).
 - The cats sit on the Dock. If the Dock hides automatically, they hop onto it when it slides out and drop back down when it goes away.
 - A sitting cat sometimes stares at your cursor for a few seconds and then yawns. Cats also yawn before a nap and after waking up, and a yawn is contagious: a cat sitting nearby yawns too.
-- With two or three cats on, they mostly keep to their own side and do not walk through each other, but now and then one walks over to another: they touch noses, sit side by side watching the snow, nap next to each other or play tag across the windows. A sociable cat starts this more often; an unsociable one may turn its back on the visitor.
+- With two or three cats on, they mostly keep to their own side and do not walk through each other, but now and then one walks over to another: they touch noses, sit side by side watching the snow, nap next to each other, play tag across the windows, or one licks the other's head. A sociable cat starts this more often; an unsociable one may turn its back on the visitor, or answer an attempt to groom it with a paw to the face.
 
 **Your own cat**
 
 Open Коты → Создать своего кота… in the menu (Добавить ещё кота… for the next one, up to four). Each cat gets its own line in the menu to switch it on and off, and a Настроить: … line to edit it. The window shows a live preview, and the cat on the screen changes as you move the controls.
 
-- Fur colour (presets or any colour), pattern (plain, white chest and socks, tabby) and fluffiness (three levels)
+- Fur colour (presets or any colour), pattern (plain, white chest and socks, tabby, siamese points, calico) and fluffiness (three levels). For a calico the body is white and the chosen colour goes into the patches
 - Eye colour, pupil shape, open or squinting look
 - Build: size, chubbiness, length of legs, tail and ears
 - Character: lazy to active, loner to sociable
@@ -69,6 +69,7 @@ Open Коты → Создать своего кота… in the menu (Доба�
 - Snow piles up on the top and bottom edges of windows, on the Dock and at the bottom of the screen.
 - Clicks pass through the snow to whatever is underneath.
 - Sweep the cursor quickly across a drift to brush it off.
+- In Mission Control the snow and the cats sitting on windows hide until the windows are back in place.
 
 **Snowballs and snowmen**
 
@@ -125,8 +126,6 @@ defaults delete local.kotiki.tom-i-pirozhok
 
 ## Roadmap
 
-- More scenes for two cats: grooming, a paw to the face
 - Windows version
-- More patterns for your own cat: siamese points, calico
 - Season selection
 - Useful nudges: take a break after working too long, go to sleep at night

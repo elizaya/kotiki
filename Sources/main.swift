@@ -93,6 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     while t < 100 + sim {
                         if !fired, t - 100 > demoAt, let d = env["KOTIKI_DEMO"] { fired = true; self.scene.demo(d) }
                         self.scene.update(t); t += 1.0 / 30
+                        // KOTIKI_MEET_PT=0.9 — остановиться посреди встречи котов, чтобы снять кадр
+                        if let pt = Double(env["KOTIKI_MEET_PT"] ?? ""), let m = self.scene.meet, m.phase == 1, m.pt >= pt { break }
                     }
                 }
                 if let img = self.view.texture(from: self.scene)?.cgImage() {
@@ -246,7 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if scene.cats.count > 1 {
             // сценки на двоих
             demoItems.append(.separator())
-            let pairs = [("greet", "Здороваются"), ("together", "Сидят рядом"), ("nap", "Спят вместе"), ("chase", "Догонялки")]
+            let pairs = [("greet", "Здороваются"), ("together", "Сидят рядом"), ("nap", "Спят вместе"), ("chase", "Догонялки"),
+                         ("groom", "Вылизывает"), ("bap", "Лапой по морде")]
             demoItems += pairs.map { k, n in item(n) { self.scene.demo(k) } }
         }
         menu.addItem(sub("Показать сценку", demoItems))

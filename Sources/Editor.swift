@@ -203,7 +203,7 @@ final class CatEditor: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         let grid = NSGridView(views: [
             [header("Внешность"), NSGridCell.emptyContentView],
             [label("Шерсть"), colorRow(CatSpec.furs, spec.fur) { [weak self] v in self?.spec.fur = v; self?.changed() }],
-            [label("Узор"), segments(["Однотонный", "В носочках", "Полосатый"], spec.pattern) { [weak self] i in self?.spec.pattern = i; self?.changed() }],
+            [label("Узор"), segments(["Однотонный", "В носочках", "Полосатый", "Сиамский", "Трёхцветный"], spec.pattern) { [weak self] i in self?.spec.pattern = i; self?.changed() }],
             [label("Пушистость"), segments(["Гладкий", "Пушистый", "Очень пушистый"], spec.fluff) { [weak self] i in self?.spec.fluff = i; self?.changed() }],
             [label("Глаза"), colorRow(CatSpec.eyes, spec.eye) { [weak self] v in self?.spec.eye = v; self?.changed() }],
             [label("Зрачок"), segments(["Щёлка", "Круглый"], spec.roundPupil ? 1 : 0) { [weak self] i in self?.spec.roundPupil = i == 1; self?.changed() }],
