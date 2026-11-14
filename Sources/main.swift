@@ -104,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 print(self.scene.surfaces.map { "\($0.id) y=\(Int($0.y)) \($0.segs.map { "\(Int($0.lowerBound))-\(Int($0.upperBound))" })" }.joined(separator: "\n"))
                 for (id, p) in self.scene.piles { print("pile", id, "max", p.h.max() ?? 0, "avg", p.h.reduce(0, +) / Float(max(1, p.h.count)), "flakes", self.scene.flakes.count, "snow", Prefs.snow, "style", Prefs.style) }
-                print("overlapT", self.scene.overlapT, "wallTrips", self.scene.scratches, "dockUp", self.scene.dockUp)
+                print("overlapT", self.scene.overlapT, "wallTrips", self.scene.scratches, "dockUp", self.scene.dockUp, "expose", self.scene.expose, "windowPileAlpha", self.scene.piles.filter { $0.key >= 0 }.map { $0.value.node.alpha }.max() ?? -1)
                 print("meets", self.scene.meets, "meet", self.scene.meet.map { "\($0.kind) phase \($0.phase)" } ?? "-", "yawns", self.scene.yawns)
                 print("selfPlays", self.scene.selfPlays, "bats", self.scene.bats, "knocks", self.scene.knocks, "snowmen", self.scene.snowmen.map { $0.radii.count })
                 print("clock", self.scene.clock, "visible", self.panel.isVisible, "occl", self.panel.occlusionState.contains(.visible), "paused", self.view.isPaused, self.scene.isPaused, "frame", self.panel.frame)

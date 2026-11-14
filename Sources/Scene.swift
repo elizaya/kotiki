@@ -258,6 +258,10 @@ final class OverlayScene: SKScene {
     var dockCache: (DockInfo, Double) = (DockInfo(), -100)
     /// автоскрываемый Док сейчас выехал
     var dockUp = false
+    /// экран «раздвинут» (Mission Control, показ окон программы): окна уехали со своих мест,
+    /// а система по-прежнему отдаёт их старые координаты, поэтому всё, что стоит на окнах, прячем
+    var expose = false
+    var exposeA: CGFloat = 1
     var dockInT = 0.0
     var dockOutT = 0.0
     var forceDock = false
@@ -424,10 +428,24 @@ final class OverlayScene: SKScene {
                 if p.dirty || key != p.key { p.key = key; p.rebuild(segs: s.segs, x0: s.x0, pixel: pixel) }
             }
         }
-        host?.ignoresMouseEvents = !(held != nil || grabCat != nil || playKeyDown || cats.contains { hit($0, mouse) })
+        fadeForExpose(CGFloat(dt))
+        host?.ignoresMouseEvents = !(held != nil || grabCat != nil || playKeyDown || cats.contains { $0.node.alpha > 0.5 && hit($0, mouse) })
     }
 
     func surface(_ id: Int) -> Surface? { surfaces.first { $0.id == id } }
+
+    /// Пока экран раздвинут, сугробы, коты, снежки и снеговики на окнах становятся невидимыми;
+    /// сами они никуда не деваются и возвращаются, когда окна встают на место. Земля и Док остаются как есть.
+    func fadeForExpose(_ dt: CGFloat) {
+        let target: CGFloat = expose ? 0 : 1
+        guard exposeA != target || expose else { return }
+        // прячем сразу, возвращаем плавно: окна ещё доезжают до своих мест
+        exposeA = expose ? 0 : min(1, exposeA + dt * 3)
+        for (id, p) in piles { p.node.alpha = id >= 0 ? exposeA : 1 }
+        for c in cats { c.node.alpha = c.surf >= 0 || c.state == .jump || c.state == .fall ? exposeA : 1 }
+        for b in balls { b.node.alpha = b.mode != .held && (b.surf >= 0 || b.mode == .flying) ? exposeA : 1 }
+        for sm in snowmen { sm.node.alpha = sm.surf >= 0 ? exposeA : 1 }
+    }
 
     // MARK: окна
 
@@ -485,7 +503,12 @@ final class OverlayScene: SKScene {
         var rects: [(Int, CGRect)] = []
         let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         if let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] {
+            var spread = false
             for w in list {
+                // на время Mission Control Док кладёт поверх всего своё окно во весь экран
+                if (w[kCGWindowOwnerName as String] as? String) == "Dock", (w[kCGWindowLayer as String] as? Int ?? 0) >= 18,
+                   let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b),
+                   r.width >= W * 0.95, r.height >= H * 0.9 { spread = true }
                 guard (w[kCGWindowLayer as String] as? Int) == 0,
                       (w[kCGWindowOwnerPID as String] as? Int) != pid,
                       (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
@@ -494,6 +517,7 @@ final class OverlayScene: SKScene {
                       let id = w[kCGWindowNumber as String] as? Int else { continue }
                 rects.append((id, r))
             }
+            expose = spread
         }
         var out: [Surface] = []
         for (i, (id, r)) in rects.enumerated() {
