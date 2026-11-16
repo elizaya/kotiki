@@ -523,6 +523,8 @@ final class OverlayScene: SKScene {
                       (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
                       let b = w[kCGWindowBounds as String] as? NSDictionary,
                       let r = CGRect(dictionaryRepresentation: b), r.width > 100, r.height > 50,
+                      // окна на других мониторах и те, что программы держат за краем экрана, нас не касаются
+                      r.intersects(CGRect(x: 0, y: 0, width: W, height: H)),
                       let id = w[kCGWindowNumber as String] as? Int else { continue }
                 rects.append((id, r))
             }
@@ -533,7 +535,7 @@ final class OverlayScene: SKScene {
             // нижний край окна: кот стоит внутри окна, на его «полу»
             let by = H - r.maxY
             if by > max(24, dockH + 24), r.height > 110 {
-                var segs = [max(0, r.minX + 6)...max(0, min(W, r.maxX - 6))]
+                var segs = span(r.minX + 6, r.maxX - 6)
                 for j in 0..<i {
                     let f = rects[j].1
                     if f.minY <= r.maxY - 2 && f.maxY >= r.maxY - 40 { segs = cut(segs, f.minX - 2, f.maxX + 2) }
@@ -545,7 +547,7 @@ final class OverlayScene: SKScene {
             }
             let y = H - r.minY
             guard r.minY > menuBottom + 3, y > dockH + 30 else { continue }
-            var segs = [max(0, r.minX)...max(0, min(W, r.maxX))]
+            var segs = span(r.minX, r.maxX)
             for j in 0..<i {
                 let f = rects[j].1
                 if f.minY <= r.minY - 1 && f.maxY >= r.minY - 1 { segs = cut(segs, f.minX - 2, f.maxX + 2) }
@@ -591,6 +593,13 @@ final class OverlayScene: SKScene {
         }
         known = winIDs
         if clock > 3 { primed = true }
+    }
+
+    /// Отрезок от a до b, обрезанный по экрану; пусто, если на экране от него ничего не осталось.
+    /// Диапазон с началом правее конца ронял программу — так бывало с окном, едва заходящим на экран.
+    func span(_ a: CGFloat, _ b: CGFloat) -> [ClosedRange<CGFloat>] {
+        let lo = max(0, a), hi = min(W, b)
+        return hi > lo ? [lo...hi] : []
     }
 
     func cut(_ segs: [ClosedRange<CGFloat>], _ a: CGFloat, _ b: CGFloat) -> [ClosedRange<CGFloat>] {
